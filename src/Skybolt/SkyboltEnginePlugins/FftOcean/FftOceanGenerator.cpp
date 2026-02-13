@@ -1,0 +1,408 @@
+/* Copyright Matthew Reid
+ *
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
+#include "FftOceanGenerator.h"
+#include "FastRandomNormalDistribution.h"
+#include <SkyboltCommon/Math/MathUtility.h>
+#include <cxxtimer/cxxtimer.hpp>
+
+#include <muFFT/fft.h>
+#include <execution>
+
+using namespace skybolt;
+
+namespace skybolt {
+namespace vis {
+
+struct FftGeneratorData
+{
+	mufft_plan_2d* verticalPlan;
+	mufft_plan_2d* horizontalPlan[2];
+};
+
+FftOceanGenerator::aligned_complex_type_ptr FftOceanGenerator::allocateAlignedComplexType(size_t elementCount)
+{
+	return aligned_complex_type_ptr(
+		reinterpret_cast<aligned_complex_type*>(mufft_alloc(elementCount * sizeof(aligned_complex_type))));
+}
+
+void FftOceanGenerator::MufftArrayDeleter::operator() (aligned_complex_type* p) const
+{
+	mufft_free(p);
+}
+
+//! This implementation is based on "Simulating Ocean Water" by Jerry Tessendorf, 2004.
+//! See https://people.computing.clemson.edu/~jtessen/reports/papers_files/coursenotes2004.pdf
+FftOceanGenerator::FftOceanGenerator(const FftOceanGeneratorConfig& config) :
+	mTextureSizePixels(config.textureSizePixels),
+	mTextureWorldSize(config.textureWorldSize),
+	mOneOnTextureWorldSize(1.0f / mTextureWorldSize),
+	mGravity(config.gravity),
+	mWaveSpectrumWindow(config.waveSpectrumWindow),
+	mUseMultipleCores(config.useMultipleCores),
+	mWindVelocity(config.windVelocity),
+	mFftGeneratorData(new FftGeneratorData)
+{
+	size_t size = config.textureSizePixels * config.textureSizePixels;
+	mHt0.resize(size);
+	mHt0Conj.resize(size);
+
+	mFftInputVertical = allocateAlignedComplexType(size);
+	mFftInputHorizontal[0] = allocateAlignedComplexType(size);
+	mFftInputHorizontal[1] = allocateAlignedComplexType(size);
+
+	mFftOutputVertical = allocateAlignedComplexType(size);
+	mFftOutputHorizontal[0] = allocateAlignedComplexType(size);
+	mFftOutputHorizontal[1] = allocateAlignedComplexType(size);
+
+	calcHt0();
+
+	mFftGeneratorData->verticalPlan = mufft_create_plan_2d_c2c(config.textureSizePixels, config.textureSizePixels, MUFFT_FORWARD, MUFFT_FLAG_CPU_ANY);
+
+	for (int i = 0; i < 2; ++i)
+	{
+		mFftGeneratorData->horizontalPlan[i] = mufft_create_plan_2d_c2c(config.textureSizePixels, config.textureSizePixels, MUFFT_FORWARD, MUFFT_FLAG_CPU_ANY);
+	}
+}
+
+FftOceanGenerator::~FftOceanGenerator()
+{
+	mufft_free_plan_2d(mFftGeneratorData->verticalPlan);
+	for (int i = 0; i < 2; ++i)
+	{
+		mufft_free_plan_2d(mFftGeneratorData->horizontalPlan[i]);
+	}
+}
+
+// Model the periodic dispersion relation, Section 3.2
+Simd4 FftOceanGenerator::calcDispersion(Simd4 kx, Simd4 kz) const
+{
+	// Define base frequency at which to loop the dispersion
+	static float w0 = 2 * math::piF() / 200.0f;
+
+	// Equation 18
+	return floor(sqrt(mGravity * sqrt(kx * kx + kz * kz)) / w0) * w0;
+}
+
+// Phillips Spectrum modulated by wind speed and direction
+// Section 3.3, equation 23
+float FftOceanGenerator::calcPhillips(int n, int m) const
+{
+	glm::vec2 normalizedCoord(2 * n - mTextureSizePixels, 2 * m - mTextureSizePixels);
+	glm::vec2 k = math::piF() * normalizedCoord * mOneOnTextureWorldSize;
+
+	float kLength = glm::length(k);
+
+	if (kLength < 0.000001)
+	{
+		return 0.0;
+	}
+
+	float windSpeed = glm::length(mWindVelocity);
+
+	// |k|^4
+	float k_len2 = kLength * kLength;
+	float k_len4 = k_len2 * k_len2;
+
+	// |k dot w|^2
+	float kw = glm::dot(k / kLength, mWindVelocity / windSpeed);
+	kw = kw * kw;
+
+	// L, L^2
+	float Lsq = windSpeed * windSpeed / mGravity;
+	Lsq = Lsq * Lsq;
+
+	// Damping term for eqation 24
+	float damping = 0.001f;
+	float l2 = Lsq * damping * damping;
+
+	// Equation 23, damped by eq. 24
+	float A = 1.f;
+	float val = A * expf(-1.f / (k_len2 * Lsq)) / k_len4 * kw;// *exp(-k_len2 * l2);
+
+	//#define DEBUG_1D_SINUSOID
+#ifdef DEBUG_1D_SINUSOID
+	return (std::abs(n - mTextureSizePixels / 2) == 8 && m == mTextureSizePixels / 2) ? 10 : 0;
+#endif
+
+#ifdef PRINT_SPECTRUM
+	if (m == mTextureSizePixels / 2)
+	{
+		std::cout << val << std::endl;
+	}
+#endif
+	return val;
+}
+
+float OMEGA = 0.84f; // sea state (inverse wave age)
+
+const float cm = 0.23f; // Eq 59
+
+const float km = 370.0f; // Eq 59
+
+inline float sqr(float x)
+{
+	return x * x;
+}
+
+//! @param k is the wave magnitude in frequency space
+//! @return wave angular frequency for a given k value
+static float omega(float k)
+{
+	return std::sqrt(9.81f * k * (1.0f + sqr(k / km))); // Eq 24
+}
+
+bool omnispectrum = false;
+
+//! Bruneton's wave spectrum is from "A unified directional spectrum for long and short wind-driven waves"
+//! by T. Elfouhaily, B. Chapron, K. Katsaros, D. Vandemark.
+//! Journal of Geophysical Research vol 102, p781-796, 1997
+float FftOceanGenerator::calcBruenton(int n, int m) const
+{
+	glm::vec2 normalizedCoord(2 * n - mTextureSizePixels, 2 * m - mTextureSizePixels);
+	glm::vec2 k = math::piF() * normalizedCoord * mOneOnTextureWorldSize;
+
+	float windSpeed = glm::length(mWindVelocity);
+	if (windSpeed == 0)
+	{
+		return 0.0;
+	}
+
+	float U10 = windSpeed;
+	float Omega = OMEGA;
+
+	// phase speed
+	float kLength = glm::length(k);
+	if (kLength < 0.000001)
+	{
+		return 0.0;
+	}
+
+	// Calculate wave phase speed
+	float c = omega(kLength) / kLength;
+
+	// Calculate wave vector magnitude at spectral peak
+	float kp = 9.81f * sqr(Omega / U10); // after Eq 3
+
+	// Calculate phase speed at spectral peak
+	float cp = omega(kp) / kp;
+
+	// Calculate friction velocity
+	float z0 = 3.7e-5f * sqr(U10) / 9.81f * pow(U10 / cp, 0.9f); // Eq 66
+	float u_star = 0.41f * U10 / log(10.0f / z0); // Eq 60
+
+	// Calculate low frequency wave component
+	float Lpm = exp(-5.0f / 4.0f * sqr(kp / kLength)); // after Eq 3
+	float gamma = Omega < 1.0f ? 1.7f : 1.7f + 6.0f * log(Omega); // after Eq 3 // log10 or log??
+	float sigma = 0.08f * (1.0f + 4.0f / pow(Omega, 3.0f)); // after Eq 3
+	float Gamma = exp(-1.0f / (2.0f * sqr(sigma)) * sqr(std::sqrt(kLength / kp) - 1.0f));
+	float Jp = pow(gamma, Gamma); // Eq 3
+	float Fp = Lpm * Jp * exp(-Omega / std::sqrt(10.0f) * (std::sqrt(kLength / kp) - 1.0f)); // Eq 32
+	float alphap = 0.006f * std::sqrt(Omega); // Eq 34
+	float Bl = 0.5f * alphap * cp / c * Fp; // Eq 31
+
+	// Calculate high frequency wave component
+	float alpham = 0.01f * (u_star < cm ? 1.0f + log(u_star / cm) : 1.0f + 3.0f * log(u_star / cm)); // Eq 44
+	float Fm = exp(-0.25f * sqr(kLength / km - 1.0f)); // Eq 41
+	float Bh = 0.5f * alpham * cm / c * Fm * Lpm; // Eq 40 (fixed)
+
+	float A = 1.f;
+
+	// Calculate amplitude with repect to wave direction
+	if (omnispectrum) {
+		return A * (Bl + Bh) / (kLength * sqr(kLength)); // Eq 30
+	}
+
+	float a0 = log(2.0f) / 4.0f; float ap = 4.0; float am = 0.13f * u_star / cm; // Eq 59
+	float Delta = tanh(a0 + ap * pow(c / cp, 2.5f) + am * pow(cm / c, 2.5f)); // Eq 57
+
+	float cosPhi = glm::dot(k / kLength, mWindVelocity / windSpeed);
+
+	// Suppress waves traveling opposite to wind, and double waves traveling with wind to preserve energy
+	if (cosPhi < 0.0) {
+		return 0.0;
+	}
+	else {
+		Bl *= 2.0;
+		Bh *= 2.0;
+	}
+
+	float cosTwoPhi = 2.f * cosPhi * cosPhi - 1.f;
+	return A * (Bl + Bh) * (1.0f + Delta * cosTwoPhi) / (2.0f * math::piF() * sqr(sqr(kLength))); // Eq 67
+}
+
+template <typename Container, typename Func>
+void runParallelOrSequential(bool useParallel, Container&& container, Func&& func) {
+    if (useParallel) {
+        std::for_each(std::execution::par,
+                      std::begin(container), std::end(container),
+                      std::forward<Func>(func));
+    } else {
+        std::for_each(std::execution::seq,
+                      std::begin(container), std::end(container),
+                      std::forward<Func>(func));
+    }
+}
+
+void FftOceanGenerator::calcHt0()
+{
+	const float dk = 2.0f * math::piF() / mTextureWorldSize;
+
+	// Calculate a minimum delta k to use to quantize k for random number lookup, to ensure random number generation is deterministic as a function of k.
+	// Determinism is important as it ensoure ocean surface shape looks similar across different texture resolutions.
+	constexpr float maxFftResolution = 100000; // The precise value doesn't matter, so long as it's high enough to achieve good quanitization of k, but not so high as to cause numerical artifacts.
+	const float kQuantizationCellSize = 2.f * math::piF() / maxFftResolution;
+
+    std::vector<int> mIndices(mTextureSizePixels);
+    std::iota(mIndices.begin(), mIndices.end(), 0); // Fill the vector with values 0 through size - 1
+
+	runParallelOrSequential(mUseMultipleCores, mIndices, [&](int& m) {
+		int index = m * mTextureSizePixels;
+		for (int n = 0; n < mTextureSizePixels; ++n)
+		{
+			// Calculate wave number at given m and n coordinates
+			glm::vec2 normalizedCoord(2 * n - mTextureSizePixels, 2 * m - mTextureSizePixels);
+			glm::vec2 k = math::piF() * normalizedCoord * mOneOnTextureWorldSize;
+
+			// Calculate complex random number from standard normal distribution as a deterministic function of wave number.
+			int kxInt = int(k.x / kQuantizationCellSize); // Quantize k to ensure determinism.
+			int kyInt = int(k.y / kQuantizationCellSize);
+			complex_type r = complex_type(deterministicNormalFast(kxInt, kyInt, 0), deterministicNormalFast(kxInt, kyInt, 1)) / std::sqrt(2.f);
+
+			mHt0[index] = r * std::sqrt(calcBruenton(n, m) / 2.0f) * dk;
+			mHt0Conj[index] = std::conj(r * std::sqrt(calcBruenton(-n, -m) / 2.0f) * dk);
+			++index;
+		}
+	});
+}
+
+// Equation 26
+static complex_type_simd4 ht(float t, Simd4 dispersion, const complex_type_simd4& ht0, const complex_type_simd4& ht0conj)
+{
+	// complex exponential is calculated by euler's identity
+	// for faster computation
+	Simd4 omegat = dispersion * t;
+	Simd4 real = cos(omegat);
+	Simd4 cmp = sin(omegat);
+
+	complex_type_simd4 c0(real, cmp);
+	complex_type_simd4 c1(real, -cmp);
+	return ht0 * c0 + ht0conj * c1;
+}
+
+const Simd4 simd4Zero(0, 0, 0, 0);
+inline Simd4 fromScalar(float v) { return Simd4(v, v, v, v); }
+
+FftOceanGenerator::complex_type toSingle(complex_type_simd4 v, int i)
+{
+	return FftOceanGenerator::complex_type(v.real()[i], v.imag()[i]);
+}
+
+static float filterNan(float v, float valueIfNan)
+{
+	return std::isnan(v) ? valueIfNan : v;
+}
+
+void FftOceanGenerator::calculate(float t, const std::span<glm::vec3>& result)
+{
+	//cxxtimer::Timer timer(true);
+
+	if (result.size() != (mTextureSizePixels * mTextureSizePixels))
+	{
+		throw std::runtime_error("FftOceanGenerator::calculate was given output buffer of unexpected size");
+	}
+	complex_type_simd4 htVertical, htHorizontalX, htHorizontalZ;
+
+	const std::optional<float> kLowerCutoff = mWaveSpectrumWindow.cutoffWavelengthLongest ? (2.f * math::piF() / *mWaveSpectrumWindow.cutoffWavelengthLongest) : std::optional<float>();
+	const std::optional<float> kUpperCutoff = mWaveSpectrumWindow.cutoffWavelengthShortest ? (2.f * math::piF() / *mWaveSpectrumWindow.cutoffWavelengthShortest) : std::optional<float>();
+
+	// Prepare fft input
+	for (int m = 0; m < mTextureSizePixels; ++m)
+	{
+		Simd4 kz = fromScalar(math::piF() * (2.0f * m - mTextureSizePixels) * mOneOnTextureWorldSize);
+		for (int ns = 0; ns < mTextureSizePixels; ns+=4) // advance in blocks of 4 which are processed concurrently with simd4
+		{
+			Simd4 n(float(ns), float(ns + 1), float(ns + 2), float(ns + 3));
+			Simd4 kx = math::piF() * (2 * n - (float)mTextureSizePixels) * mOneOnTextureWorldSize;
+			Simd4 kMagnitude = sqrt(kx * kx + kz * kz) + 0.0000001f; // add epsilon to prevent divide by zero
+			int index = m * mTextureSizePixels + ns;
+
+			// Pack 4 array items at a time into simd4
+			complex_type_simd4 ht0(
+				{mHt0[index + 0].real(), mHt0[index + 1].real(), mHt0[index + 2].real(), mHt0[index + 3].real()},
+				{mHt0[index + 0].imag(), mHt0[index + 1].imag(), mHt0[index + 2].imag(), mHt0[index + 3].imag()});
+
+			complex_type_simd4 ht0Conj(
+				{mHt0Conj[index + 0].real(), mHt0Conj[index + 1].real(), mHt0Conj[index + 2].real(), mHt0Conj[index + 3].real()},
+				{mHt0Conj[index + 0].imag(), mHt0Conj[index + 1].imag(), mHt0Conj[index + 2].imag(), mHt0Conj[index + 3].imag()});
+
+			// Calculate dispersion with simd4 intrinsics
+			htVertical = ht(t, calcDispersion(kx, kz), ht0, ht0Conj);
+
+			// Calculate damping
+			if (kUpperCutoff)
+			{
+				constexpr float dampingPower = 20.0f; // Higher values give more aggressive damping
+
+				Simd4 damping = exp(-pow(kMagnitude / fromScalar(*kUpperCutoff), fromScalar(dampingPower)));
+				htVertical *= damping;
+
+			}
+			if (kLowerCutoff)
+			{
+				constexpr float dampingPower = 20.0f; // Higher values give more aggressive damping
+
+				Simd4 damping = Simd4(1.0f) - exp(-pow(kMagnitude / *kLowerCutoff, fromScalar(dampingPower)));
+				htVertical *= damping;
+			}
+
+			// Unpack from simd4 to muFFT input
+			htHorizontalX = htVertical * complex_type_simd4(simd4Zero, -kx / kMagnitude);
+			htHorizontalZ = htVertical * complex_type_simd4(simd4Zero, -kz / kMagnitude);
+
+			for (int i = 0; i < 4; ++i)
+			{
+				mFftInputVertical[index + i] = toSingle(htVertical, i);
+				mFftInputHorizontal[0][index + i] = toSingle(htHorizontalX, i);
+				mFftInputHorizontal[1][index + i] = toSingle(htHorizontalZ, i);
+			}
+		}
+	}
+
+	// Run FFT
+	mufft_execute_plan_2d(mFftGeneratorData->verticalPlan, mFftOutputVertical.get(), mFftInputVertical.get());
+	mufft_execute_plan_2d(mFftGeneratorData->horizontalPlan[0], mFftOutputHorizontal[0].get(), mFftInputHorizontal[0].get());
+	mufft_execute_plan_2d(mFftGeneratorData->horizontalPlan[1], mFftOutputHorizontal[1].get(), mFftInputHorizontal[1].get());
+	//std::cout << "time " << timer.count() << std::endl;
+
+	// Output results to vector displacement image
+	float lambda = 8.f; // Controls wave peak steepness
+	float signs[] = { 1.0f, -1.0f };
+
+	glm::vec3* data = result.data();
+
+	for (int m = 0; m < mTextureSizePixels; ++m)
+	{
+		for (int n = 0; n < mTextureSizePixels; ++n)
+		{
+			int index = m * mTextureSizePixels + n;
+			int sign = (int)signs[(n + m) & 1];
+
+			data[index].x = filterNan(mFftOutputHorizontal[0][index].real() * sign * lambda, 0.f);
+			data[index].y = filterNan(mFftOutputHorizontal[1][index].real() * sign * lambda, 0.f);
+			data[index].z = filterNan(mFftOutputVertical[index].real() * sign, 0.f);
+		}
+	}
+}
+
+void FftOceanGenerator::setWindVelocity(const glm::vec2& windVelocity)
+{
+	mWindVelocity = windVelocity;
+	calcHt0();
+}
+
+} // namespace vis
+} // namespace skybolt

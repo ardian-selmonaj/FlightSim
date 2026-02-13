@@ -1,0 +1,6 @@
+sources:
+  3.7.0:
+    url: https://github.com/matthew-reid/OpenSceneGraph
+    branch: conan-3.7.0
+patches:
+  3.7.0: []

@@ -1,0 +1,15 @@
+{
+	"components": [
+		{"node": {
+		}},
+		{"camera": {
+		}},
+    {"cameraController": {
+    }},
+	{"scenarioMetadata": {
+		"scenarioObjectDirectory": "Cameras"
+	}},
+	{"attacher": {
+	}}
+	]
+}

@@ -1,0 +1,33 @@
+/* Copyright Matthew Reid
+ *
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
+#pragma once
+
+#include "SkyboltSim/PropertyMetadata.h"
+#include <SkyboltCommon/Units.h>
+#include <SkyboltReflect/Reflection.h>
+
+namespace skybolt {
+namespace sim {
+
+class Yawable
+{
+public:
+	virtual ~Yawable() = default;
+	virtual double getYaw() const { return mYaw; }
+	virtual void setYaw(double yaw) { mYaw = yaw; }
+
+protected:
+	double mYaw = 0;
+};
+
+SKYBOLT_REFLECT(Yawable) {
+	registry.type<Yawable>("Yawable")
+		.property("yaw", &Yawable::getYaw, &Yawable::setYaw, {{PropertyMetadataNames::units, Units::Radians}});
+}
+
+} // namespace sim
+} // namespace skybolt
