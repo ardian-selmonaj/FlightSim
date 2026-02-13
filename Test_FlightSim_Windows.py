@@ -1,6 +1,6 @@
 import os, subprocess, sys
 
-SKYBOLT_DIR = r"C:\Users\ardian.selmonaj\Projects\SkyboltJSBSimBuild"
+SKYBOLT_DIR = r"C:\Users\ardian.selmonaj\Projects\FlightSimBuild"
 RELEASE = SKYBOLT_DIR + r"\bin\Release"
 BAT_FILE = SKYBOLT_DIR + r"\conanrunenv-release-x86_64.bat"
 PLUGIN = RELEASE + r"\plugins"
