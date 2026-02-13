@@ -28,6 +28,7 @@ This is a modified version of the project called [Skybolt](https://github.com/Pr
 
 7) run python script `Test_MultiAgent.py`. For more Python Bindings, need to extend `FlightSim\src\Skybolt\SkyboltPythonBindings\PythonBindings.cpp` appropriately. 
 
+8) note: when pushing with git, set `git config --global core.autocrlf false` to use LF accross all platforms.
 
 ## INSTALLING ON LINUX
 
