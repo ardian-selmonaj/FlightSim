@@ -6,6 +6,7 @@ This is a modified version of the project called [Skybolt](https://github.com/Pr
 
 - Make it run on Linux
 - Init location directly as instance creation of FlightSim(loc) for JSBSim, otherwise performance decrease!
+- Read out state of JSBSim aircraft for Human-Agent Interaction!
 
 ## INSTALLING ON WINDOWS
 
