@@ -33,6 +33,8 @@ This is a modified version of the project called [Skybolt](https://github.com/Pr
 
 ## INSTALLING ON LINUX
 
+*NOTE*: Currently, installation on Linux works. But, at time of development, running caused problems (buffer overflow). 
+
 1) in Linux terminal, run: 
 
 ```
