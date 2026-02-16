@@ -421,7 +421,7 @@ public:
             engineRoot->scenario->world.addEntity(aircraft);
             
             // initial pose (at 0° lat, 0° lon, 500 m)
-            sim::LatLonAlt boeingFieldPosition(0 * math::degToRadD(), 0 * math::degToRadD(), 500);
+            sim::LatLonAlt boeingFieldPosition(45.975305 * math::degToRadD(), 8.965318 * math::degToRadD(), 2000);
             Quaternion aircraftOrientation = toGeocentric(sim::LtpNedOrientation(math::quatIdentity()), sim::toLatLon(boeingFieldPosition)).orientation;
 			setPosition(*aircraft, toGeocentric(sim::LatLonAltPosition(boeingFieldPosition)).position);
             setOrientation(*aircraft, aircraftOrientation);
