@@ -2,6 +2,11 @@
 
 This is a modified version of the project called [Skybolt](https://github.com/Prograda/Skybolt/tree/master). It is used as MARL environment for realistic simulations and human-agent interactions.
 
+*TODO:* 
+
+- Make it run on Linux
+- Init location directly as instance creation of FlightSim(loc) for JSBSim, otherwise performance decrease!
+
 ## INSTALLING ON WINDOWS
 
 1) install VS Build Tools and use c++ build tools. Make sure to have selected:
