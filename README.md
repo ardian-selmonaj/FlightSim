@@ -30,9 +30,83 @@ This is a modified version of the project called [Skybolt](https://github.com/Pr
 
 8) note: when pushing with git, set `git config --global core.autocrlf false` to use LF accross all platforms.
 
+
 ## INSTALLING ON LINUX
 
-Instructions will follow
+1) in Linux terminal, run: 
+
+```
+sudo apt update
+sudo apt install -y build-essential cmake python3 python3-pip python3-venv pkg-config
+```
+
+Check to install Python 3.10 or 3.11. Check if all required components are installed:
+```
+g++ --version
+cmake --version
+python3 --version
+```
+
+2) create venv and install conan:
+```
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install conan==2.22.0
+```
+and create a conan profile:
+```
+conan profile detect --force
+```
+which is usually stored under `~/.conan2/profiles/default`. Check that `compiler.cppstd=17` is set.
+
+3) go to FlightSim directory and build the project:
+```
+conan build . \
+  --output-folder=$HOME/FlightSimBuild \
+  --build=missing \
+  -o openscenegraph-mr/*:shared=True \
+  -o enable_jsbsim=True \
+  -o enable_python=True \
+  - enable_qt = False
+```
+
+4) create a `settings.json` file in `~/Skybolt/Settings.json` with the most basic information:
+```
+{
+    "clouds": {
+        "enableTemporalUpscaling": true
+    },
+    "display": {
+        "multiSampleCount": 4,
+        "texturePoolSizeMB": 512,
+        "vsync": true
+    },
+    "mouse": {
+        "sensitivity": 1.0
+    },
+    "shadows": {
+        "cascadeBoundingDistances": [
+            0.02,
+            20.0,
+            70.0,
+            250.0,
+            7000
+        ],
+        "enabled": true,
+        "textureSize": 2048
+    },
+    "tileApiKeys": {
+        "bing": "",
+        "mapbox": "pk.eyJ1IjoiYXJkaWFuLXNlbG1vbmFqIiwiYSI6ImNtbDVmYjlyMDAwYXkzZXMybGV6bWh2enAifQ.kYwMo1PfJVT2bmSzMK9n8g"
+    },
+    "jsb": {
+        "rootDir": "None"
+    }
+}
+```
+
+5) Install JSBSim and provide the installation directory in `settings.json`. 
 
 
 ## RENDERING SCENE
