@@ -6,7 +6,7 @@ This is a modified version of the project called [Skybolt](https://github.com/Pr
 
 - Make it run on Linux
 - Init location directly as instance creation of FlightSim(loc) for JSBSim, otherwise performance decrease!
-- Read out state of JSBSim aircraft for Human-Agent Interaction!
+- Read out state of JSBSim aircraft for Human-Agent Interaction! -> partially done, see `test_flightsim.py` in [HHMARL3D](https://github.com/ardian-selmonaj/HHMARL_3D) project.
 
 ## INSTALLING ON WINDOWS
 
@@ -35,7 +35,7 @@ This is a modified version of the project called [Skybolt](https://github.com/Pr
 
 7) run python script `Test_MultiAgent.py`. For more Python Bindings, need to extend `FlightSim\src\Skybolt\SkyboltPythonBindings\PythonBindings.cpp` appropriately. 
 
-8) note: when pushing with git, set `git config --global core.autocrlf false` to use LF accross all platforms.
+*NOTE*: when pushing with git, set `git config --global core.autocrlf false` to use LF accross all platforms.
 
 
 ## INSTALLING ON LINUX
