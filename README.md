@@ -6,7 +6,7 @@ This is a modified version of the project called [Skybolt](https://github.com/Pr
 
 - Make it run on Linux
 - Init location directly as instance creation of FlightSim(loc) for JSBSim, otherwise performance decrease!
-- Read out state of JSBSim aircraft for Human-Agent Interaction!
+- Read out state of JSBSim aircraft for Human-Agent Interaction --> partially done, see `test_flightsim.py` in [HHMARL3D](https://github.com/ardian-selmonaj/HHMARL_3D)
 - Better to set init position, then orientation and velocity to let C++ enginge simulate future states instead of setting the attitude by Python-JSBSim.
 
 ## INSTALLING ON WINDOWS
