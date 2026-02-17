@@ -89,6 +89,8 @@
 
 #include <osgDB/ReadFile>
 #include <osgDB/WriteFile>
+#include <osg/MatrixTransform>
+#include <osgUtil/Optimizer>
 
 #include <iostream>
 #include <filesystem>
@@ -455,17 +457,17 @@ public:
         }
 
         // Then rocket map
-        auto itR = rocketMap.find(entityId);
-        if (itR != rocketMap.end())
-        {
-            sim::EntityPtr& entity = itR->second;
-            if (!entity){
-                throw std::runtime_error("FlightSim: rocket entity pointer is null for ID " + std::to_string(entityId));
-            }
-            setPosition(*entity, toGeocentric(sim::LatLonAltPosition(position)).position);
-            setOrientation(*entity,toGeocentric(sim::LtpNedOrientation(math::quatFromEuler(rpy)), sim::toLatLon(position)).orientation);
-            return;
-        }
+        // auto itR = rocketMap.find(entityId);
+        // if (itR != rocketMap.end())
+        // {
+        //     sim::EntityPtr& entity = itR->second;
+        //     if (!entity){
+        //         throw std::runtime_error("FlightSim: rocket entity pointer is null for ID " + std::to_string(entityId));
+        //     }
+        //     setPosition(*entity, toGeocentric(sim::LatLonAltPosition(position)).position);
+        //     setOrientation(*entity,toGeocentric(sim::LtpNedOrientation(math::quatFromEuler(rpy)), sim::toLatLon(position)).orientation);
+        //     return;
+        // }
 
         // Not found in either map
         throw std::runtime_error("FlightSim: entity with ID " + std::to_string(entityId) + " not found");
@@ -490,18 +492,18 @@ public:
         }
 
         // Then rocket map
-        auto itR = rocketMap.find(entityId);
-        if (itR != rocketMap.end())
-        {
-            sim::EntityPtr& entity = itR->second;
-            if (!entity){
-                throw std::runtime_error("FlightSim: rocket entity pointer is null for ID " + std::to_string(entityId));
-            }
+        // auto itR = rocketMap.find(entityId);
+        // if (itR != rocketMap.end())
+        // {
+        //     sim::EntityPtr& entity = itR->second;
+        //     if (!entity){
+        //         throw std::runtime_error("FlightSim: rocket entity pointer is null for ID " + std::to_string(entityId));
+        //     }
 
-            engineRoot->scenario->world.removeEntity(entity.get());
-            rocketMap.erase(itR);
-            return;
-        }
+        //     engineRoot->scenario->world.removeEntity(entity.get());
+        //     rocketMap.erase(itR);
+        //     return;
+        // }
 
         // Not found in either map
         throw std::runtime_error("FlightSim: entity with ID " + std::to_string(entityId) + " not found");
@@ -509,13 +511,7 @@ public:
 
     int fire_rocket(int entityId)
     {
-        // changed Matrix component in ShuttleSRB.osgt file to following values to decrease size of Rocket:
-        // Matrix {
-        // -0.00000  -0.25000   0.00000   0.00000
-        // 0.15000  -0.00000   0.00000   0.00000
-        // 0.00000   0.00000   0.25000   0.00000
-        // 0.00000   0.00000   0.00000   1.00000
-        // }
+        // changed Matrix component in ShuttleSRB.osgt file to decrease size of Rocket.
         
         sim::EntityPtr rocket = engineRoot->entityFactory->createEntity("ShuttleSRB");
         engineRoot->scenario->world.addEntity(rocket);
@@ -528,7 +524,9 @@ public:
         
         setPosition(*rocket, *getPosition(*it->second));
         setOrientation(*rocket, *getOrientation(*it->second));
-        rocketMap[rocket->getId().entityId] = rocket;
+		setVelocity(*rocket, *getOrientation(*rocket) * Vector3(3000,0,0));
+		
+        rocketMap[rocket->getId().entityId] = { rocket, currentWallTime };
 
         return rocket->getId().entityId;
     }
@@ -562,9 +560,25 @@ public:
         }
         currentWallTime += dtWallClock;
 
+		// Expire rockets that have exceeded their lifespan
+		for (auto it = rocketMap.begin(); it != rocketMap.end(); )
+		{
+			double spawnTime = it->second.second;
+			if (currentWallTime >= spawnTime + rocketLifeSpan)
+			{
+				engineRoot->scenario->world.removeEntity(it->second.first.get());
+				it = rocketMap.erase(it);
+			}
+			else
+			{
+				++it;
+			}
+		}
+
         return visRoot->render();
     }
 
+	// same as frame()
     void run()
     {
         runMainLoop(*visRoot, *engineRoot, UpdateLoop::neverExit);
@@ -593,7 +607,8 @@ private:
 
     std::map<int, sim::EntityPtr> aircraftMap;
     std::map<int, std::string> entityTypes;
-    std::map<int, sim::EntityPtr> rocketMap;
+    // std::map<int, sim::EntityPtr> rocketMap; // --->> OLD
+    std::map<int, std::pair<sim::EntityPtr, double>> rocketMap;
     sim::EntityPtr simCamera;
     CameraControllerComponentPtr cameraControllerComponent;
 
@@ -612,6 +627,7 @@ private:
     std::shared_ptr<CameraViewSelector> cameraViewSelector;
 
     double currentWallTime = 0.0;
+	double rocketLifeSpan = 1.0; //seconds
 
     sim::EntityPtr simCamera2;
     CameraControllerComponentPtr cameraControllerComponent2;
@@ -649,6 +665,54 @@ bool convertToOSGT(const std::string& inputPath)
 	}
 
 	return true;
+}
+
+bool scaleAndSaveModel(const std::string& inputPath, float scaleFactor)
+{
+    // Load the scene
+    osg::ref_ptr<osg::Node> node = osgDB::readNodeFile(inputPath);
+    if (!node)
+    {
+        std::cerr << "Failed to read file: " << inputPath << std::endl;
+        return false;
+    }
+
+    // Wrap the node in a MatrixTransform to apply uniform scale
+    osg::ref_ptr<osg::MatrixTransform> scaleTransform = new osg::MatrixTransform();
+    scaleTransform->setMatrix(osg::Matrix::scale(scaleFactor, scaleFactor, scaleFactor));
+    scaleTransform->addChild(node);
+
+    // Flatten the static transform into the geometry so the scale is baked in,
+    // rather than just being a runtime transform node. This makes the output
+    // portable and compatible with tools that don't honour MatrixTransform.
+    osgUtil::Optimizer optimizer;
+    optimizer.optimize(scaleTransform, osgUtil::Optimizer::FLATTEN_STATIC_TRANSFORMS);
+
+    // Build base output path (no extension), with "_scaled" suffix
+    std::filesystem::path inPath(inputPath);
+    std::filesystem::path basePath = inPath.parent_path() / (inPath.stem().string() + "_scaled");
+
+    // Save as .osgt
+    std::filesystem::path osgtPath = basePath;
+    osgtPath.replace_extension(".osgt");
+    if (!osgDB::writeNodeFile(*scaleTransform, osgtPath.string()))
+    {
+        std::cerr << "Failed to write OSGT file: " << osgtPath << std::endl;
+        return false;
+    }
+    std::cout << "Saved OSGT: " << osgtPath << std::endl;
+
+    // Save as .ive
+    std::filesystem::path ivePath = basePath;
+    ivePath.replace_extension(".ive");
+    if (!osgDB::writeNodeFile(*scaleTransform, ivePath.string()))
+    {
+        std::cerr << "Failed to write IVE file: " << ivePath << std::endl;
+        return false;
+    }
+    std::cout << "Saved IVE:  " << ivePath << std::endl;
+
+    return true;
 }
 
 static void removeNamespaceQualifier(std::string& str)
@@ -1119,6 +1183,7 @@ PYBIND11_MODULE(skybolt, m) {
 	m.def("getProperties", &getComponentProperties);
 	m.def("getProperty", &getComponentProperty);
 	m.def("convertToOSGT", &convertToOSGT, py::arg("inpath"));
+	m.def("scaleAndSaveModel", &scaleAndSaveModel, py::arg("inpath"), py::arg("scale"));
 
 	py::class_<FlightSim>(m, "FlightSim")
     .def(py::init<int,int,int,int,const std::map<int, std::string>&,bool,bool>(),
