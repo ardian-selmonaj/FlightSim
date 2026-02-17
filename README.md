@@ -20,7 +20,8 @@ This is a modified version of the project called [Skybolt](https://github.com/Pr
 
 3) `pip install conan==2.22.0` and create a default profile: `conan profile detect --force`. For JSBSim, need to set `compiler.cppstd=17` (instead of 14) in conan profile, located under "user\\.conan2"
 
-4) go to the directory of the local clone of this repository, e.g., "\user\FlightSim" and run `conan build . --output-folder=\user\FlightSimBuild --build==missing -o openscenegraph-mr/*:shared=True -o enable_jsbsim=True -o enable_python=True -o enable_qt=False`.
+4) go to the directory of the local clone of this repository, e.g., "\user\FlightSim" and run 
+```conan build . --output-folder=\user\FlightSimBuild --build=missing -o openscenegraph-mr/*:shared=True -o enable_jsbsim=True -o enable_python=True -o enable_qt=False```.
 
 5) install [JSBSSim](https://github.com/JSBSim-Team/jsbsim?tab=readme-ov-file#installation), go to Skybolt settings, located under "user\AppData\Local\Skybolt\settings.json" and provide the root directory of JSBSim as: 
 
