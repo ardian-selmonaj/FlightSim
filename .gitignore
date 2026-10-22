@@ -1,1 +1,4 @@
 Assets/mapbox*
+.venv/
+__pycache__/
+CMakeUserPresets.json

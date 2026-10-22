@@ -10,8 +10,7 @@
 			"size": [19.8, 4, 2.5]
 		}},
 		{"jsbSimAircraft": {
-			"model": "f16",
-			"jsbSimRootDir": "C:/Users/ardian.selmonaj/JSBSim"
+			"model": "f16"
 		}},
 		{"visualModel": {
 			"model": "Models/SepecatJaguarRed/SepecatJaguar_Fuselage.ive",

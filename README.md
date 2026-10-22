@@ -11,32 +11,25 @@ This is a modified version of the project called [Skybolt](https://github.com/Pr
 
 ## INSTALLING ON WINDOWS
 
-1) install VS Build Tools and use c++ build tools. Make sure to have selected:
-- C++ build tools workload
-- MSVC v143
-- Windows 10 or 11 SDK
-- C++ CMake tools for Windows
+1) In the local clone of this repository, run `setup_windows.bat` (double-click it or run it in a terminal). It does the complete setup. Each step is skipped if it is already done, so it can be re-run at any time, e.g., to rebuild after changing the C++ code:
+- installs the VS 2022 Build Tools with the C++ build tools workload (MSVC v143, Windows SDK, C++ CMake tools for Windows) using `VSBuildTools.exe` of this repository (downloaded if missing). This step asks for administrator rights.
+- loads the MSVC compiler environment, so the "Developer Command Prompt for VS 2022" is not needed
+- creates the Python 3.11.0 virtual environment `.venv` (Python 3.11.0 is installed if it is missing) with `conan==2.22.0`, `jsbsim==1.3.3` and `requests`
+- creates a default conan profile (if there is none) and builds the project with `compiler.cppstd=17` (needed for JSBSim) into `FlightSimBuild` next to the repository. The first build compiles all dependencies and takes long.
+- sets the root directory of JSBSim in the Skybolt settings, located under "user\AppData\Local\Skybolt\Settings.json". The JSBSim aircraft data comes with the `jsbsim` Python package, so no separate JSBSim installation is needed. An existing valid `rootDir` is kept.
+- checks that `import skybolt` works
 
-2) Open "Developer Command Prompt for VS 2022" and type `cl` and `cmake --version` to check if both return something.
+- Options: `setup_windows.bat -BuildDir D:\FlightSimBuild` builds into another folder (then set the environment variable `FLIGHTSIM_BUILD_DIR` to that folder), `setup_windows.bat -PythonExe C:\path\to\python.exe` uses a Python 3.11.0 in a non-standard location.
 
-3) `pip install conan==2.22.0` and create a default profile: `conan profile detect --force`. For JSBSim, need to set `compiler.cppstd=17` (instead of 14) in conan profile, located under "user\\.conan2"
+2) for realistic rendering, run `.venv\Scripts\python Tools\Tile_Map_Downloader.py`. For Switzerland, the map tiles (zoom levels 0-14) are already available under the links [Terrain](https://drive.google.com/file/d/1lMife7PamdICDU4D7hoqI3tCQr1aqn9c/view?usp=sharing) and [Satellite](https://drive.google.com/file/d/1CQ3N1oqyjL1ly_6SO7m9wICEsS0f2zVm/view?usp=sharing), as zips of tiles that were already downloaded from Mapbox. The script downloads both zips and unzips them into `Assets\mapbox_terrain_ch` and `Assets\mapbox_satellite_ch`, where the entity `Assets\Globe\Entities\PlanetEarth.json` looks for the map tiles. Tiles that already exist in `Assets` are not downloaded again. If the download fails (e.g., the link expired), download the zips manually and unzip them into `Assets`.
 
-4) go to the directory of the local clone of this repository, e.g., "\user\FlightSim" and run 
-```conan build . --output-folder=\user\FlightSimBuild --build=missing -o openscenegraph-mr/*:shared=True -o enable_jsbsim=True -o enable_python=True -o enable_qt=False```.
+- For increased depth (better details), further zoom levels need to be downloaded directly from Mapbox with the same script, e.g., `.venv\Scripts\python Tools\Tile_Map_Downloader.py --zoom 15 16`. Existing tiles are skipped. Afterwards, raise `maxLevel` in `PlanetEarth.json` accordingly. The area is set by `CENTER_LATITUDE`, `CENTER_LONGITUDE` and the ranges in the script. Note that the number of tiles grows about 4x per zoom level. Of course, you can use any other map tiles from Mapbox or any other source.
 
-5) install [JSBSSim](https://github.com/JSBSim-Team/jsbsim?tab=readme-ov-file#installation), go to Skybolt settings, located under "user\AppData\Local\Skybolt\settings.json" and provide the root directory of JSBSim as: 
+3) run `.venv\Scripts\python Test_FlightSim_Windows.py`. Python scripts using Skybolt only need `import flightsim_env` before `import skybolt` (see `flightsim_env.py`). For more Python Bindings, need to extend `FlightSim\src\Skybolt\SkyboltPythonBindings\PythonBindings.cpp` appropriately and re-run `setup_windows.bat`. 
 
-```
-    "jsb": {
-        "rootDir": "C:/Users/thisuser/JSBSim"
-    }
-```
+*NOTE 1*: The repo and build folder need short paths, otherwise Windows build tools break if path exceeds 260 characters.
 
-6) for realistic rendering, download the map tiles of Switzerland: [Terrain](https://supsi-my.sharepoint.com/:u:/g/personal/ardian_selmonaj_supsi_ch/IQCWFoPOCBLaQ6p837Vod2coAbW9juV3RTQxCuAd-rjkjiA?e=TWTKNb) and [Satellite](https://supsi-my.sharepoint.com/:u:/g/personal/ardian_selmonaj_supsi_ch/IQC3RLT8KjYKSKEZxr-s7Rm6AQ3ukCzpFAOT0MRr-jqHN5Y?e=oOqqbS). Of course, you can download any other Map tiles from Mapbox or any other source. Unzip and store the folders into `Assets`. The entity under `Assets\Globe\Entities\PlanetEarth.json` will look for these map tiles for rendering. 
-
-7) run python script `Test_MultiAgent.py`. For more Python Bindings, need to extend `FlightSim\src\Skybolt\SkyboltPythonBindings\PythonBindings.cpp` appropriately. 
-
-*NOTE*: when pushing with git, set `git config --global core.autocrlf false` to use LF accross all platforms.
+*NOTE 2*: when pushing with git, set `git config --global core.autocrlf false` to use LF accross all platforms.
 
 
 ## INSTALLING ON LINUX
