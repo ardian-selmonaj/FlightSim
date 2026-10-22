@@ -7,7 +7,8 @@
     (e.g. to rebuild after changing the C++ code):
       1. Visual Studio 2022 Build Tools with the C++ workload (MSVC v143, Windows SDK, C++ CMake tools)
       2. MSVC compiler environment (replaces the "Developer Command Prompt for VS 2022")
-      3. Python 3.11.0 virtual environment .venv with conan, jsbsim and requests
+      3. Python 3.11 virtual environment .venv with conan, jsbsim and requests
+         (Python 3.11 is installed next to other Python versions if it is missing)
       4. Conan default profile
       5. Conan build of FlightSim
       6. JSBSim root directory in the Skybolt settings (Settings.json)
@@ -18,7 +19,7 @@
     Build output folder. Defaults to FlightSimBuild next to the repository, where flightsim_env.py looks for it.
 
 .PARAMETER PythonExe
-    Path to the python.exe of a Python 3.11.0 installation in a non-standard location.
+    Path to the python.exe of a Python 3.11 installation in a non-standard location.
 #>
 param(
     [string]$BuildDir = "",
@@ -29,7 +30,8 @@ $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"  # Invoke-WebRequest is very slow with the progress bar in Windows PowerShell
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
-$PythonVersion = "3.11.0"
+$PythonVersion = "3.11"
+$PythonInstallerVersion = "3.11.9"  # latest 3.11 release with a Windows installer, later 3.11 releases are source-only
 $ConanVersion = "2.22.0"
 $JsbSimVersion = "1.3.3"
 
@@ -89,8 +91,13 @@ function Get-PythonVersion([string]$Exe) {
     return "$version".Trim()
 }
 
+function Test-PythonVersion([string]$Version) {
+    # True for any 3.11.x version
+    return [bool]$Version -and $Version.StartsWith("$PythonVersion.")
+}
+
 function Find-Python {
-    # Returns the path of a Python 3.11.0 interpreter, or $null
+    # Returns the path of an installed Python 3.11 interpreter, or $null
     $ErrorActionPreference = "Continue"  # "py" reports a missing Python version on stderr
     $candidates = @()
     if ($PythonExe) { $candidates += $PythonExe }
@@ -103,7 +110,7 @@ function Find-Python {
 
     foreach ($candidate in ($candidates | Select-Object -Unique)) {
         $version = Get-PythonVersion $candidate
-        if ($version -eq $PythonVersion) { return $candidate }
+        if (Test-PythonVersion $version) { return $candidate }
         if ($version) { Write-Host "Ignoring Python $version at $candidate (Python $PythonVersion is required)" }
     }
     return $null
@@ -152,21 +159,23 @@ if (-not (Test-Path $VenvPython)) {
     if (-not $basePython) {
         $target = Join-Path $env:LOCALAPPDATA "Programs\Python\Python311"
         if (Test-Path (Join-Path $target "python.exe")) {
-            throw "Another Python 3.11 version is installed in $target. Install Python $PythonVersion, or pass -PythonExe <path to its python.exe>."
+            throw "The Python installation in $target does not work. Repair or remove it, or pass -PythonExe <path to a Python $PythonVersion python.exe>."
         }
-        $pyInstaller = Join-Path $env:TEMP "python-$PythonVersion-amd64.exe"
-        Write-Host "Python $PythonVersion not found, installing it into $target ..."
-        Invoke-WebRequest -Uri "https://www.python.org/ftp/python/$PythonVersion/python-$PythonVersion-amd64.exe" -OutFile $pyInstaller -UseBasicParsing
+        # Installed for the current user into its own folder, next to any other Python versions. PATH, file associations
+        # and the py launcher are left unchanged, so the default "python" of the system stays the same.
+        $pyInstaller = Join-Path $env:TEMP "python-$PythonInstallerVersion-amd64.exe"
+        Write-Host "Python $PythonVersion not found, installing Python $PythonInstallerVersion into $target ..."
+        Invoke-WebRequest -Uri "https://www.python.org/ftp/python/$PythonInstallerVersion/python-$PythonInstallerVersion-amd64.exe" -OutFile $pyInstaller -UseBasicParsing
         $process = Start-Process -FilePath $pyInstaller -Wait -PassThru `
-            -ArgumentList "/quiet InstallAllUsers=0 PrependPath=0 Include_launcher=0 Include_test=0 Shortcuts=0 TargetDir=`"$target`""
-        if ($process.ExitCode -ne 0) { throw "Python $PythonVersion installation failed with exit code $($process.ExitCode)" }
+            -ArgumentList "/quiet InstallAllUsers=0 PrependPath=0 AssociateFiles=0 Include_launcher=0 Include_test=0 Shortcuts=0 TargetDir=`"$target`""
+        if ($process.ExitCode -ne 0) { throw "Python $PythonInstallerVersion installation failed with exit code $($process.ExitCode)" }
         $basePython = Join-Path $target "python.exe"
     }
     Write-Host "Creating $VenvDir with $basePython"
     Invoke-Checked $basePython @("-m", "venv", $VenvDir)
 }
 $venvVersion = Get-PythonVersion $VenvPython
-if ($venvVersion -ne $PythonVersion) {
+if (-not (Test-PythonVersion $venvVersion)) {
     throw "$VenvDir uses Python $venvVersion instead of $PythonVersion. Delete the .venv folder and run the setup again."
 }
 Write-Host "$VenvDir uses Python $venvVersion"
