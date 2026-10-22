@@ -24,7 +24,14 @@ osg::ref_ptr<osg::GraphicsContext> createOffscreenContext(int width, int height)
 	traits->sharedContext = 0x0;
 	traits->samples = 16;
 
-	return osg::GraphicsContext::createGraphicsContext(traits.get());
+	osg::ref_ptr<osg::GraphicsContext> context = osg::GraphicsContext::createGraphicsContext(traits.get());
+	if (!context)
+	{
+		// Some X servers (e.g. WSLg on WSL2) have no multisampled pixel formats
+		traits->samples = 0;
+		context = osg::GraphicsContext::createGraphicsContext(traits.get());
+	}
+	return context;
 }
 
 osg::ref_ptr<osgViewer::Viewer> createOffscreenViewer(int width, int height)

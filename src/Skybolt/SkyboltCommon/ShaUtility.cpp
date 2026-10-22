@@ -23,7 +23,8 @@ std::string calcSha1(const std::string& p_arg)
 
 	for (int i = 0; i < 5; i++)
 	{
-		snprintf(buf + (i << 3), 41, "%08x", hash[i]);
+		// Pass the remaining size of buf. More than that aborts with "buffer overflow detected" if _FORTIFY_SOURCE is enabled (default on Ubuntu).
+		snprintf(buf + (i << 3), sizeof(buf) - (i << 3), "%08x", hash[i]);
 	}
 
 	return std::string(buf);

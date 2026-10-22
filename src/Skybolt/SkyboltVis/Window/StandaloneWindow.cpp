@@ -5,6 +5,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 #include "StandaloneWindow.h"
+#include <osg/DisplaySettings>
 #include <osgViewer/View>
 
 #if defined(WIN32)
@@ -35,6 +36,16 @@ static osg::ref_ptr<osgViewer::View> createStandaloneView(const RectI& rect)
 
 	osg::ref_ptr<osgViewer::View> view = new osgViewer::View;
 	view->setUpViewInWindow(rect.x, rect.y, rect.width, rect.height);
+
+	if (!view->getCamera()->getGraphicsContext() && osg::DisplaySettings::instance()->getNumMultiSamples() > 0)
+	{
+		// Some X servers (e.g. WSLg on WSL2) have no multisampled visuals. The scene is rendered to multisampled
+		// render targets anyway, so the window itself does not need multisampling.
+		osg::ref_ptr<osg::DisplaySettings> settings = new osg::DisplaySettings(*osg::DisplaySettings::instance());
+		settings->setNumMultiSamples(0);
+		view->setDisplaySettings(settings);
+		view->setUpViewInWindow(rect.x, rect.y, rect.width, rect.height);
+	}
 
 	osg::GraphicsContext* context = view->getCamera()->getGraphicsContext();
 	if (!context)

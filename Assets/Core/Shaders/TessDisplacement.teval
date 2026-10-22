@@ -34,7 +34,6 @@ uniform vec2 heightMapUvOffset;
 uniform vec3 cameraPosition;
 uniform vec3 lightDirection;
 
-vec4 osg_ClipPlane = vec4(0,0,-1,0); // TODO: do we still need this?
 vec3 interpolateQuad(vec3 v0, vec3 v1, vec3 v2, vec3 v3)
 {
 	vec3 a = mix(v0, v1, gl_TessCoord.x);
@@ -105,8 +104,6 @@ void main()
 	vec4 position_viewSpace = viewMatrix * vec4(position_worldSpace,1);
 	cameraDistance = length(position_viewSpace.xyz);
 
-	gl_ClipDistance[0] = (dot(osg_ClipPlane.xyz, position_worldSpace) + osg_ClipPlane.w) / length(osg_ClipPlane.xyz);
-	
 	gl_Position = viewProjectionMatrix * vec4(position_worldSpace, 1);
 #ifdef CAST_SHADOWS
 	// Increase terrain caster depth to decrease shadow acne.

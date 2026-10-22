@@ -4,7 +4,6 @@ This is a modified version of the project called [Skybolt](https://github.com/Pr
 
 *TODO:* 
 
-- Make it run on Linux
 - Init location directly as instance creation of FlightSim(loc) for JSBSim, otherwise performance decrease!
 - Read out state of JSBSim aircraft for Human-Agent Interaction --> partially done, see `test_flightsim.py` in [HHMARL3D](https://github.com/ardian-selmonaj/HHMARL_3D)
 - Better to set init position, then orientation and velocity to let C++ enginge simulate future states instead of setting the attitude by Python-JSBSim.
@@ -12,7 +11,7 @@ This is a modified version of the project called [Skybolt](https://github.com/Pr
 ## INSTALLING ON WINDOWS
 
 1) In the local clone of this repository, run `setup_windows.bat` (double-click it or run it in a terminal). It does the complete setup. Each step is skipped if it is already done, so it can be re-run at any time, e.g., to rebuild after changing the C++ code:
-- installs the VS 2022 Build Tools with the C++ build tools workload (MSVC v143, Windows SDK, C++ CMake tools for Windows) using `VSBuildTools.exe` of this repository (downloaded if missing). This step asks for administrator rights.
+- installs the VS 2022 Build Tools with the C++ build tools workload (MSVC v143, Windows SDK, C++ CMake tools for Windows) using `Tools\VSBuildTools.exe` of this repository (downloaded if missing). This step asks for administrator rights.
 - loads the MSVC compiler environment, so the "Developer Command Prompt for VS 2022" is not needed
 - creates the Python 3.11 virtual environment `.venv` with an installed Python 3.11. If there is none, Python 3.11.9 (the latest 3.11 with a Windows installer) is installed for the current user next to any other Python versions, without changing PATH, file associations or the default `python`. The venv gets `conan==2.22.0`, `jsbsim==1.3.3` and `requests`
 - creates a default conan profile (if there is none) and builds the project with `compiler.cppstd=17` (needed for JSBSim) into `FlightSimBuild` next to the repository. The first build compiles all dependencies and takes long.
@@ -34,82 +33,25 @@ This is a modified version of the project called [Skybolt](https://github.com/Pr
 
 ## INSTALLING ON LINUX
 
-*NOTE*: Currently, installation on Linux works. But, at time of development, running caused problems (buffer overflow). 
+Tested with Ubuntu 24.04 under WSL2. The setup installs the system packages with `apt`, i.e., it is meant for Debian and Ubuntu.
 
-1) in Linux terminal, run: 
+1) In the local clone of this repository, run `./setup_linux.sh`. It does the complete setup. Each step is skipped if it is already done, so it can be re-run at any time, e.g., to rebuild after changing the C++ code:
+- installs the missing system packages with `apt`: compiler, CMake, OpenGL and X11 development files. This step asks for the `sudo` password if packages are missing.
+- creates the Python 3.11 virtual environment `.venv` with [uv](https://docs.astral.sh/uv/), which is installed into `~/.local/bin` if it is missing. If there is no Python 3.11 managed by uv, uv installs one for the current user next to any other Python versions, without changing the system Python or the default `python`. The venv gets `conan==2.22.0`, `jsbsim==1.3.3`, `requests` and `pip`
+- checks the compiler (GCC 11 or newer) and CMake. If the CMake of the system is older than 3.26 (e.g., on Ubuntu 22.04), a newer CMake is installed into `.venv`
+- creates a default conan profile (if there is none) and builds the project into `FlightSimBuild` next to the repository. The first build compiles all dependencies and takes long.
+- sets the root directory of JSBSim in the Skybolt settings, located under `~/Skybolt/Settings.json`. The JSBSim aircraft data comes with the `jsbsim` Python package, so no separate JSBSim installation is needed. An existing valid `rootDir` is kept.
+- checks that `import skybolt` works
 
-```
-sudo apt update
-sudo apt install -y build-essential cmake python3 python3-pip python3-venv pkg-config
-```
+- Options: `./setup_linux.sh --build-dir ~/FlightSimBuild` builds into another folder (then set the environment variable `FLIGHTSIM_BUILD_DIR` to that folder), `./setup_linux.sh --python /usr/bin/python3.11` creates `.venv` with a specific Python 3.11 (it needs the development files, e.g., `python3.11-dev`), `./setup_linux.sh --jobs 4` sets the number of parallel compile jobs (by default, it depends on the CPU cores and the memory).
 
-Check to install Python 3.10 or 3.11. Check if all required components are installed:
-```
-g++ --version
-cmake --version
-python3 --version
-```
+2) for realistic rendering, run `.venv/bin/python Tools/Tile_Map_Downloader.py`, as described in step 2 of the Windows installation. Under WSL2, the map tiles can also be copied from a Windows clone, e.g., `cp -r /mnt/c/<path to clone>/Assets/mapbox_* Assets/` (reading them directly from `/mnt/c` is slow).
 
-2) create venv and install conan:
-```
-python3 -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
-pip install conan==2.22.0
-```
-and create a conan profile:
-```
-conan profile detect --force
-```
-which is usually stored under `~/.conan2/profiles/default`. Check that `compiler.cppstd=17` is set.
+3) run `.venv/bin/python Test_FlightSim_Linux.py`. As on Windows, Python scripts using Skybolt only need `import flightsim_env` before `import skybolt` (see `flightsim_env.py`). On Linux, it loads the shared libraries of the build, so `LD_LIBRARY_PATH` does not need to be set. For more Python Bindings, need to extend `FlightSim/src/Skybolt/SkyboltPythonBindings/PythonBindings.cpp` appropriately and re-run `./setup_linux.sh`.
 
-3) go to FlightSim directory and build the project:
-```
-conan build . \
-  --output-folder=$HOME/FlightSimBuild \
-  --build=missing \
-  -o openscenegraph-mr/*:shared=True \
-  -o enable_jsbsim=True \
-  -o enable_python=True \
-  - enable_qt = False
-```
+*NOTE 1*: A desktop session is needed to open the window. Under WSL2, it is provided by WSLg. There, Mesa renders on the CPU unless its driver for the GPU is selected, which `flightsim_env.py` does (`GALLIUM_DRIVER=d3d12`). Otherwise, the simulation is about 25x slower.
 
-4) create a `settings.json` file in `~/Skybolt/Settings.json` with the most basic information:
-```
-{
-    "clouds": {
-        "enableTemporalUpscaling": true
-    },
-    "display": {
-        "multiSampleCount": 4,
-        "texturePoolSizeMB": 512,
-        "vsync": true
-    },
-    "mouse": {
-        "sensitivity": 1.0
-    },
-    "shadows": {
-        "cascadeBoundingDistances": [
-            0.02,
-            20.0,
-            70.0,
-            250.0,
-            7000
-        ],
-        "enabled": true,
-        "textureSize": 2048
-    },
-    "tileApiKeys": {
-        "bing": "",
-        "mapbox": "pk.eyJ1IjoiYXJkaWFuLXNlbG1vbmFqIiwiYSI6ImNtbDVmYjlyMDAwYXkzZXMybGV6bWh2enAifQ.kYwMo1PfJVT2bmSzMK9n8g"
-    },
-    "jsb": {
-        "rootDir": "None"
-    }
-}
-```
-
-5) Install JSBSim and provide the installation directory in `settings.json`. 
+*NOTE 2*: In contrast to Windows, the build does not set `compiler.cppstd=17`. The conan profile detected for GCC has `gnu17`, which JSBSim accepts, and changing it would rebuild all dependencies.
 
 
 ## RENDERING SCENE

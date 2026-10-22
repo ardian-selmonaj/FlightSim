@@ -122,10 +122,10 @@ $VsPath = Find-VsInstall
 if ($VsPath) {
     Write-Host "Found $VsPath"
 } else {
-    $installer = Join-Path $RepoDir "VSBuildTools.exe"
+    $installer = Join-Path $RepoDir "Tools\VSBuildTools.exe"
     if (-not (Test-Path $installer)) {
         $installer = Join-Path $env:TEMP "vs_BuildTools.exe"
-        Write-Host "VSBuildTools.exe not found in the repository, downloading it ..."
+        Write-Host "Tools\VSBuildTools.exe not found in the repository, downloading it ..."
         Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vs_BuildTools.exe" -OutFile $installer -UseBasicParsing
     }
     $vsArgs = "--passive --wait --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"

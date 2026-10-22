@@ -14,12 +14,20 @@ include_directories(${pybind11_INCLUDE_DIRS})
 set(LIBS
 	SkyboltEngine
 	ExamplesCommon
-	${Python3_LIBRARIES}
 	pybind11::headers
 )
 
+if (WIN32)
+	list(APPEND LIBS ${Python3_LIBRARIES})
+	set(MODULE_TYPE SHARED) # the .pyd goes to bin/Release, where flightsim_env.py looks for it
+else()
+	# Extension modules must not link libpython on Linux. The interpreter provides the Python symbols, and
+	# e.g. the Python of uv has libpython linked statically, so a second libpython would be loaded.
+	set(MODULE_TYPE MODULE)
+endif()
+
 include(pybind11Tools)
-pybind11_add_module(${TARGET_NAME} ${SrcFiles} SHARED)
+pybind11_add_module(${TARGET_NAME} ${SrcFiles} ${MODULE_TYPE})
 target_link_libraries (${TARGET_NAME} PUBLIC ${LIBS})
 
 set_target_properties(${TARGET_NAME} PROPERTIES FOLDER PythonLibs)
