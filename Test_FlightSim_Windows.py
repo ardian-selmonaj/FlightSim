@@ -7,7 +7,7 @@ import math
 ######## in set_entity_attitude(), we could also provide Velocity, as Skybolt already includes this.
 ######## better to provide initial location at instance creation !
 
-app = sb.FlightSim(10, 30, 1080, 720, 
+app = sb.FlightSim(0, 40, 1080, 720, 
                         entityTypes={1:"SepecatJaguarJsbBlue", 2:"SepecatJaguarRed"}, 
                         # entityTypes={1:"SepecatJaguarJsbBlue"}, 
                         manual = True,

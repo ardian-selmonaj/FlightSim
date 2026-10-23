@@ -4,13 +4,14 @@ This is a modified version of the project called [Skybolt](https://github.com/Pr
 
 *TODO:* 
 
-- Init location directly as instance creation of FlightSim(loc) for JSBSim, otherwise performance decrease!
-- Read out state of JSBSim aircraft for Human-Agent Interaction --> partially done, see `test_flightsim.py` in [HHMARL3D](https://github.com/ardian-selmonaj/HHMARL_3D)
-- Better to set init position, then orientation and velocity to let C++ enginge simulate future states instead of setting the attitude by Python-JSBSim.
+- provide init location directly at instance creation of sb.FlightSim(loc) for JSBSim (otherwise performance decrease)
+- Probably more efficient to simulate JSBSim in C++: set only init position in python, then let C++ engine (pythonbindings) simulate future state (orientation, velocity, attitude)
+- Human-Agent Interaction --> partially done, see `test_flightsim.py` in [HHMARL3D](https://github.com/ardian-selmonaj/HHMARL_3D). Specifically, if MANUAL mode is activated, then one of n aircraft should be possible to control manually. For now, only use keyboards and/or mouse. Later, we use dedicated joysticks, rudder, pedals. 
+
 
 ## INSTALLING ON WINDOWS
 
-1) In the local clone of this repository, run `setup_windows.bat` (double-click it or run it in a terminal). It does the complete setup. Each step is skipped if it is already done, so it can be re-run at any time, e.g., to rebuild after changing the C++ code:
+1) In the local clone of this repository, run `setup_windows.bat` (double-click it or run it in a terminal). It does the complete setup. Each step is skipped if it is already done, so it can be re-run at any time. After changing C++ code, the faster `Tools\update_pythonbindings_windows.bat` is usually enough, see [Updating the Python bindings](#updating-the-python-bindings):
 - installs the VS 2022 Build Tools with the C++ build tools workload (MSVC v143, Windows SDK, C++ CMake tools for Windows) using `Tools\VSBuildTools.exe` of this repository (downloaded if missing). This step asks for administrator rights.
 - loads the MSVC compiler environment, so the "Developer Command Prompt for VS 2022" is not needed
 - creates the Python 3.11 virtual environment `.venv` with an installed Python 3.11. If there is none, Python 3.11.9 (the latest 3.11 with a Windows installer) is installed for the current user next to any other Python versions, without changing PATH, file associations or the default `python`. The venv gets `conan==2.22.0`, `jsbsim==1.3.3` and `requests`
@@ -24,7 +25,7 @@ This is a modified version of the project called [Skybolt](https://github.com/Pr
 
 - For increased depth (better details), further zoom levels need to be downloaded directly from Mapbox with the same script, e.g., `.venv\Scripts\python Tools\Tile_Map_Downloader.py --zoom 15 16`. Existing tiles are skipped. Afterwards, raise `maxLevel` in `PlanetEarth.json` accordingly. The area is set by `CENTER_LATITUDE`, `CENTER_LONGITUDE` and the ranges in the script. Note that the number of tiles grows about 4x per zoom level. Of course, you can use any other map tiles from Mapbox or any other source.
 
-3) run `.venv\Scripts\python Test_FlightSim_Windows.py`. Python scripts using Skybolt only need `import flightsim_env` before `import skybolt` (see `flightsim_env.py`). For more Python Bindings, need to extend `FlightSim\src\Skybolt\SkyboltPythonBindings\PythonBindings.cpp` appropriately and re-run `setup_windows.bat`. 
+3) run `.venv\Scripts\python Test_FlightSim_Windows.py`. Python scripts using Skybolt only need `import flightsim_env` before `import skybolt` (see `flightsim_env.py`). For more Python Bindings, need to extend `FlightSim\src\Skybolt\SkyboltPythonBindings\PythonBindings.cpp` appropriately and run `Tools\update_pythonbindings_windows.bat` (see [Updating the Python bindings](#updating-the-python-bindings)).
 
 *NOTE 1*: The repo and build folder need short paths, otherwise Windows build tools break if path exceeds 260 characters.
 
@@ -35,7 +36,7 @@ This is a modified version of the project called [Skybolt](https://github.com/Pr
 
 Tested with Ubuntu 24.04 under WSL2. The setup installs the system packages with `apt`, i.e., it is meant for Debian and Ubuntu.
 
-1) In the local clone of this repository, run `./setup_linux.sh`. It does the complete setup. Each step is skipped if it is already done, so it can be re-run at any time, e.g., to rebuild after changing the C++ code:
+1) In the local clone of this repository, run `./setup_linux.sh`. It does the complete setup. Each step is skipped if it is already done, so it can be re-run at any time. After changing C++ code, the faster `./Tools/update_pythonbindings_linux.sh` is usually enough, see [Updating the Python bindings](#updating-the-python-bindings):
 - installs the missing system packages with `apt`: compiler, CMake, OpenGL and X11 development files. This step asks for the `sudo` password if packages are missing.
 - creates the Python 3.11 virtual environment `.venv` with [uv](https://docs.astral.sh/uv/), which is installed into `~/.local/bin` if it is missing. If there is no Python 3.11 managed by uv, uv installs one for the current user next to any other Python versions, without changing the system Python or the default `python`. The venv gets `conan==2.22.0`, `jsbsim==1.3.3`, `requests` and `pip`
 - checks the compiler (GCC 11 or newer) and CMake. If the CMake of the system is older than 3.26 (e.g., on Ubuntu 22.04), a newer CMake is installed into `.venv`
@@ -47,11 +48,25 @@ Tested with Ubuntu 24.04 under WSL2. The setup installs the system packages with
 
 2) for realistic rendering, run `.venv/bin/python Tools/Tile_Map_Downloader.py`, as described in step 2 of the Windows installation. Under WSL2, the map tiles can also be copied from a Windows clone, e.g., `cp -r /mnt/c/<path to clone>/Assets/mapbox_* Assets/` (reading them directly from `/mnt/c` is slow).
 
-3) run `.venv/bin/python Test_FlightSim_Linux.py`. As on Windows, Python scripts using Skybolt only need `import flightsim_env` before `import skybolt` (see `flightsim_env.py`). On Linux, it loads the shared libraries of the build, so `LD_LIBRARY_PATH` does not need to be set. For more Python Bindings, need to extend `FlightSim/src/Skybolt/SkyboltPythonBindings/PythonBindings.cpp` appropriately and re-run `./setup_linux.sh`.
+3) run `.venv/bin/python Test_FlightSim_Linux.py`. As on Windows, Python scripts using Skybolt only need `import flightsim_env` before `import skybolt` (see `flightsim_env.py`). On Linux, it loads the shared libraries of the build, so `LD_LIBRARY_PATH` does not need to be set. For more Python Bindings, need to extend `FlightSim/src/Skybolt/SkyboltPythonBindings/PythonBindings.cpp` appropriately and run `./Tools/update_pythonbindings_linux.sh` (see [Updating the Python bindings](#updating-the-python-bindings)).
 
 *NOTE 1*: A desktop session is needed to open the window. Under WSL2, it is provided by WSLg. There, Mesa renders on the CPU unless its driver for the GPU is selected, which `flightsim_env.py` does (`GALLIUM_DRIVER=d3d12`). Otherwise, the simulation is about 25x slower.
 
 *NOTE 2*: In contrast to Windows, the build does not set `compiler.cppstd=17`. The conan profile detected for GCC has `gnu17`, which JSBSim accepts, and changing it would rebuild all dependencies.
+
+
+## UPDATING THE PYTHON BINDINGS
+
+After changing C++ code, e.g., extending `src/Skybolt/SkyboltPythonBindings/PythonBindings.cpp`, the Python bindings are updated in one step, without running the whole setup again:
+- Windows: double-click `Tools\update_pythonbindings_windows.bat`. Close all Python programs that use `skybolt` before, because Windows locks the module file `skybolt.cp311-win_amd64.pyd` while it is loaded, so the build cannot replace it.
+- Linux: run `./Tools/update_pythonbindings_linux.sh`. `--jobs N` sets the number of parallel compile jobs (by default, it depends on the CPU cores and the memory, as in the setup).
+
+The script builds the existing `FlightSimBuild` (or the folder in `FLIGHTSIM_BUILD_DIR`) again with CMake and checks that `import skybolt` works. Only what changed is compiled again: the Python bindings, and also the other Skybolt libraries and the plugins (e.g., JSBSim) if their code was changed. Changes to `CMakeLists.txt` files are picked up as well.
+
+Re-run the whole setup (`setup_windows.bat` or `./setup_linux.sh`) instead if:
+- C++ source files were added, removed or renamed. CMake collects the source files only when the setup configures the build, so the update script does not see them.
+- `conanfile.py`, the conan options or the dependencies were changed
+- the build folder or `.venv` does not exist yet, e.g., on a new machine or after deleting `FlightSimBuild` (the update script reports this)
 
 
 ## RENDERING SCENE
