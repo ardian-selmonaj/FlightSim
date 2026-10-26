@@ -7,7 +7,7 @@
     (e.g. to rebuild after changing the C++ code):
       1. Visual Studio 2022 Build Tools with the C++ workload (MSVC v143, Windows SDK, C++ CMake tools)
       2. MSVC compiler environment (replaces the "Developer Command Prompt for VS 2022")
-      3. Python 3.11 virtual environment .venv with conan, jsbsim and requests
+      3. Python 3.11 virtual environment .venv with conan, jsbsim, requests, imageio-ffmpeg and reportlab
          (Python 3.11 is installed next to other Python versions if it is missing)
       4. Conan default profile
       5. Conan build of FlightSim
@@ -33,7 +33,9 @@ $ProgressPreference = "SilentlyContinue"  # Invoke-WebRequest is very slow with 
 $PythonVersion = "3.11"
 $PythonInstallerVersion = "3.11.9"  # latest 3.11 release with a Windows installer, later 3.11 releases are source-only
 $ConanVersion = "2.22.0"
-$JsbSimVersion = "1.3.3"
+$JsbSimVersion = "1.3.0"  # same as the JSBSim of the C++ build (conanfile.py) and of HHMARL_3D_NEW
+$ImageioFfmpegVersion = "0.6.0"  # its ffmpeg encodes the videos recorded with key R
+$ReportlabVersion = "5.1.0"  # builds instructions.pdf with Tools\build_instructions_pdf.py
 
 $RepoDir = $PSScriptRoot
 $DefaultBuildDir = Join-Path (Split-Path $RepoDir -Parent) "FlightSimBuild"
@@ -179,7 +181,7 @@ if (-not (Test-PythonVersion $venvVersion)) {
     throw "$VenvDir uses Python $venvVersion instead of $PythonVersion. Delete the .venv folder and run the setup again."
 }
 Write-Host "$VenvDir uses Python $venvVersion"
-Invoke-Checked $VenvPython @("-m", "pip", "install", "--disable-pip-version-check", "conan==$ConanVersion", "jsbsim==$JsbSimVersion", "requests")
+Invoke-Checked $VenvPython @("-m", "pip", "install", "--disable-pip-version-check", "conan==$ConanVersion", "jsbsim==$JsbSimVersion", "requests", "imageio-ffmpeg==$ImageioFfmpegVersion", "reportlab==$ReportlabVersion")
 
 # Use the venv for the rest of the setup (conanfile.py calls "conan" itself)
 $env:VIRTUAL_ENV = $VenvDir

@@ -5,7 +5,7 @@
 # (e.g. to rebuild after changing the C++ code):
 #   1. System packages: compiler, CMake, OpenGL and X11 development files
 #      (installed with apt, asks for the sudo password if packages are missing)
-#   2. Python 3.11 virtual environment .venv with conan, jsbsim, requests and pip, created with uv
+#   2. Python 3.11 virtual environment .venv with conan, jsbsim, requests, imageio-ffmpeg, reportlab and pip, created with uv
 #      (uv and Python 3.11 are installed for the current user if they are missing)
 #   3. Compiler and CMake (a newer CMake is installed into .venv if the one of the system is too old)
 #   4. Conan default profile
@@ -29,7 +29,9 @@ set -Eeuo pipefail
 
 PYTHON_VERSION="3.11"
 CONAN_VERSION="2.22.0"
-JSBSIM_VERSION="1.3.3"
+JSBSIM_VERSION="1.3.0"    # same as the JSBSim of the C++ build (conanfile.py) and of HHMARL_3D_NEW
+IMAGEIO_FFMPEG_VERSION="0.6.0"  # its ffmpeg encodes the videos recorded with key R
+REPORTLAB_VERSION="5.1.0"       # builds instructions.pdf with Tools/build_instructions_pdf.py
 CMAKE_MIN_VERSION="3.26"  # cmake_minimum_required of CMakeLists.txt
 GCC_MIN_VERSION="11"      # Skybolt uses C++20
 
@@ -169,7 +171,7 @@ esac
     || fail "The Python of $VENV_DIR has no development files (Python.h). Install them (e.g. python$PYTHON_VERSION-dev), or delete the .venv folder and run the setup without --python to use a Python managed by uv."
 
 # pip as well, so that further packages can be installed with ".venv/bin/python -m pip", as on Windows
-"$UV" pip install --python "$VENV_PYTHON" "conan==$CONAN_VERSION" "jsbsim==$JSBSIM_VERSION" requests pip
+"$UV" pip install --python "$VENV_PYTHON" "conan==$CONAN_VERSION" "jsbsim==$JSBSIM_VERSION" requests "imageio-ffmpeg==$IMAGEIO_FFMPEG_VERSION" "reportlab==$REPORTLAB_VERSION" pip
 
 # Use the venv for the rest of the setup (conanfile.py calls "conan" itself)
 export VIRTUAL_ENV="$VENV_DIR"

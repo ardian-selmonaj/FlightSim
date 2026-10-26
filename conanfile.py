@@ -71,7 +71,8 @@ class SkyboltConan(ConanFile):
             self.include_package("xsimd", "7.4.10", transitive_headers=True)
 
         if self.options.enable_jsbsim:
-            self.requires("jsbsim/1.1.13")
+            # Same version as the jsbsim Python package of the setup scripts and HHMARL_3D_NEW
+            self.include_package("jsbsim", "1.3.0", subfolder="all")
 
         if self.options.enable_map_features_converter:
             self.requires("readosm/1.1.0a")

@@ -83,5 +83,14 @@ else:
             break  # if skybolt needs one of them, importing skybolt reports the missing library
         pending = failed
 
+# ffmpeg encodes the videos recorded with key R: the one of the Python package imageio-ffmpeg if it is installed, otherwise
+# skybolt uses ffmpeg from PATH. Set FLIGHTSIM_FFMPEG to use another ffmpeg.
+if not os.environ.get("FLIGHTSIM_FFMPEG"):
+    try:
+        import imageio_ffmpeg
+        os.environ["FLIGHTSIM_FFMPEG"] = imageio_ffmpeg.get_ffmpeg_exe()
+    except (ImportError, RuntimeError):
+        pass
+
 # Ensure skybolt module is found
 sys.path.append(str(RELEASE))

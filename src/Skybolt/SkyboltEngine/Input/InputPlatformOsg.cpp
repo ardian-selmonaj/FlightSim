@@ -385,6 +385,16 @@ void MouseInputDeviceOsg::setMouseState(MouseEvent& event, const osgGA::GUIEvent
 	event.relState.x = mPrevPosition ? std::floor(ea.getX() - mPrevPosition->x) : 0.0;
 	event.relState.y = mPrevPosition  ? -std::floor(ea.getY() - mPrevPosition->y) : 0.0; // negate to flip from +Y upward to +Y downwards
 	event.relState.z = ea.getScrollingDeltaY();
+	if (ea.getEventType() == osgGA::GUIEventAdapter::SCROLL && event.relState.z == 0)
+	{
+		// The OSG windows of Windows and X11 only report the scrolling direction, one wheel notch is 120 as with Windows
+		switch (ea.getScrollingMotion())
+		{
+			case osgGA::GUIEventAdapter::SCROLL_UP: event.relState.z = 120; break;
+			case osgGA::GUIEventAdapter::SCROLL_DOWN: event.relState.z = -120; break;
+			default: break;
+		}
+	}
 
 	if (mWrapEnabled)
 	{

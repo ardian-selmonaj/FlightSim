@@ -55,6 +55,31 @@ void SimStepper::update(SecondsD dt)
 	updateSystem(systems, UpdateStage::Output);
 }
 
+void SimStepper::updateBySubsteps(int substeps)
+{
+	assert(substeps >= 0);
+	auto systems = *mSystems; // Take copy in case a system adds/removes another system during step
+
+	updateSystem(systems, UpdateStage::Input);
+	updateSystem(systems, UpdateStage::BeginStateUpdate);
+
+	if (substeps > 0)
+	{
+		if (mDynamicsEnabled)
+		{
+			performDynamicsSubSteps(systems, substeps);
+		}
+		else
+		{
+			advaniceTimeByNonDynamicsStep(systems, substeps * mDynamicsStepSize);
+		}
+	}
+
+	updateSystem(systems, UpdateStage::EndStateUpdate);
+	updateSystem(systems, UpdateStage::Attachments);
+	updateSystem(systems, UpdateStage::Output);
+}
+
 void SimStepper::advanceTimeByDynamicsSubSteps(const std::vector<SystemPtr>& systems, SecondsD dt)
 {
 	assert(mDynamicsEnabled);
@@ -72,8 +97,12 @@ void SimStepper::advanceTimeByDynamicsSubSteps(const std::vector<SystemPtr>& sys
 
 	mStepTimer = newStepTimer - requiredSteps * mDynamicsStepSize;
 
-	// Perform substeps
-	for (int i = 0; i < requiredSteps; i++)
+	performDynamicsSubSteps(systems, requiredSteps);
+}
+
+void SimStepper::performDynamicsSubSteps(const std::vector<SystemPtr>& systems, int substeps)
+{
+	for (int i = 0; i < substeps; i++)
 	{
 		mCurrentTime += mDynamicsStepSize;
 

@@ -4,19 +4,6 @@ import math
 
 # sb.convertToOSGT("Assets/Movers/Models/SepecatJaguarBlue/SepecatJaguar_Fuselage.osgb")
 
-######## in set_entity_attitude(), we could also provide Velocity, as Skybolt already includes this.
-######## better to provide initial location at instance creation !
-
-app = sb.FlightSim(10, 30, 1080, 720,
-                        entityTypes={1:"SepecatJaguarJsbBlue", 2:"SepecatJaguarRed"},
-                        # entityTypes={1:"SepecatJaguarJsbBlue"},
-                        manual = True,
-                        multiwindow=False)
-
-dt = 1.0 / 60.0
-i = 0
-rocket_idx = None
-
 #Lugano
 LON = 8.965318
 LAT = 45.975305
@@ -25,39 +12,41 @@ LAT = 45.975305
 # LON = 8.274841
 # LAT = 47.182253
 
+def lla(lat_deg, lon_deg, alt_m):
+    return sb.LatLonAlt(math.radians(lat_deg), math.radians(lon_deg), float(alt_m))
+
+def rpy(roll_deg, pitch_deg, yaw_deg):
+    return sb.Vector3(math.radians(roll_deg), math.radians(pitch_deg), math.radians(yaw_deg))
+
+app = sb.FlightSim(10, 30, 1080, 720, manual=True, multiwindow=False)
+
+# Aircraft 1 is simulated by JSBSim (template with a jsbSimAircraft component) and flown with the keyboard.
+# Its initial conditions are the position, orientation and velocity (north, east, down in m/s) given here.
+app.add_aircraft(1, "SepecatJaguarJsbBlue", position=lla(LAT, LON, 3300), rpy=rpy(0, 0, 0), velocityNed=sb.Vector3(150, 0, 0))
+app.set_manual_aircraft(1)
+
+# Aircraft 2 has no flight dynamics and is moved from Python
+app.add_aircraft(2, "SepecatJaguarRed", position=lla(LAT, LON, 3050), rpy=rpy(0, 0, 90))
+
+# Labels and trails (the flown path) in team colors, toggled with L and T
+app.set_aircraft_label(1, "B1")
+app.set_aircraft_color(1, (0.05, 0.3, 1.0))
+app.set_aircraft_label(2, "R2")
+app.set_aircraft_color(2, (1.0, 0.06, 0.04))
+
+dt = 1.0 / 60.0
+i = 0
+
 while True:
+    app.set_aircraft_state(2, position=lla(LAT, LON, 3050 + i), rpy=rpy(0, 0, 90))
 
-    # if i <75:
-    if i < 1:
-        lla = [LAT, LON, 3300] #Lugano
-        lla = sb.LatLonAlt(math.radians(lla[0]), math.radians(lla[1]), float(lla[2]))
-        rpy = [0,0,0]
-        rpy = sb.Vector3(math.radians(rpy[0]), math.radians(rpy[1]), math.radians(rpy[2]))
-
-        app.set_entity_attitude(1, position=lla, rpy=rpy)
-
-    lla = [LAT, LON, 3050+i] #Lugano
-    lla = sb.LatLonAlt(math.radians(lla[0]), math.radians(lla[1]), float(lla[2]))
-    rpy = [0,0,90]
-    rpy = sb.Vector3(math.radians(rpy[0]), math.radians(rpy[1]), math.radians(rpy[2]))
-    app.set_entity_attitude(2, position=lla, rpy=rpy)
+    # Space fires the cannon (shown as tracers)
+    if app.consume_fire_requests():
+        app.fire_tracer(1)
 
     if not app.frame(dt):
         break
-    i+=1
-
-    # print(f"iter {i}")
-    # time.sleep(0.1)
-
-    # if i == 20:
-    #     rocket_idx = app.fire_rocket(1)
+    i += 1
 
     # if i == 75:
-    #     app.remove_entity(1)
-
-    # if i > 22:
-    #     lla = [LAT+i*0.00001, LON, 3000] #Lugano
-    #     lla = sb.LatLonAlt(math.radians(lla[0]), math.radians(lla[1]), float(lla[2]))
-    #     rpy = [0,0,0]
-    #     rpy = sb.Vector3(math.radians(rpy[0]), math.radians(rpy[1]), math.radians(rpy[2]))
-    #     app.set_entity_attitude(rocket_idx, position=lla, rpy=rpy)
+    #     app.remove_aircraft(2)

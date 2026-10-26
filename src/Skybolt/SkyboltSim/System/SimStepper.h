@@ -27,13 +27,19 @@ public:
 
 	void update(SecondsD dt);
 
+	//! Like update(), but advances the simulation by exactly the given number of dynamics substeps,
+	//! independent of the time accumulated by previous calls to update().
+	void updateBySubsteps(int substeps);
+
 	void setDynamicsEnabled(bool enabled) { mDynamicsEnabled = enabled; }
 
 	void setDynamicsStepSize(double stepSize) { mDynamicsStepSize = stepSize; }
+	double getDynamicsStepSize() const { return mDynamicsStepSize; }
 	void setMaxDynamicsSubsteps(const std::optional<int>& substeps) { mMaxDynamicsSubsteps = substeps; }
 
 private:
 	void advanceTimeByDynamicsSubSteps(const std::vector<SystemPtr>& systems, SecondsD dt);
+	void performDynamicsSubSteps(const std::vector<SystemPtr>& systems, int substeps);
 	void advaniceTimeByNonDynamicsStep(const std::vector<SystemPtr>& systems, SecondsD dt);
 
 	void updateSystem(const std::vector<SystemPtr>& systems, UpdateStage stage);
