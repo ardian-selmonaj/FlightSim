@@ -131,6 +131,13 @@ static std::unique_ptr<EngineRoot> createEngineRoot(bool enableVis = true, bool 
 {
 	nlohmann::json settings = readEngineSettings({});
 
+	// Mapbox token of Tools/mapbox_token.txt (see flightsim_env.py). With a token, the map tiles that are not available
+	// offline are loaded from Mapbox, see the "fallback" tile sources of Assets/Globe/Entities/PlanetEarth.json.
+	if (const char* token = std::getenv("FLIGHTSIM_MAPBOX_TOKEN"); token && *token)
+	{
+		settings["tileApiKeys"]["mapbox"] = token;
+	}
+
 	std::vector<PluginFactory> pluginFactories;
 	
 	if (loadPlugins)

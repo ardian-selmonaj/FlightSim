@@ -13,7 +13,15 @@
 				"projection": "sphericalMercator",
 				"format": "mapboxElevation",
 				"cache": true,
-				"maxLevel": 14
+				"maxLevel": 14,
+				"fallback": {
+					"url": "https://api.mapbox.com/v4/mapbox.terrain-rgb/{z}/{x}/{y}.pngraw?access_token={key}",
+					"projection": "sphericalMercator",
+					"format": "mapboxElevation",
+					"cache": true,
+					"maxLevel": 13,
+					"apiKeyName": "mapbox"
+				}
 			}
 		}},
 		{"visualPlanet": {
@@ -23,7 +31,15 @@
 					"projection": "sphericalMercator",
 					"format": "xyz",
 					"cache": true,
-					"maxLevel": 13
+					"maxLevel": 13,
+					"fallback": {
+						"url": "https://api.mapbox.com/v4/mapbox.satellite/{z}/{x}/{y}.jpg?access_token={key}",
+						"projection": "sphericalMercator",
+						"format": "xyz",
+						"cache": true,
+						"maxLevel": 13,
+						"apiKeyName": "mapbox"
+					}
 				},
 				"uniformDetail_disabled": {
 					"texture": "Environment/Ground/Ground026_1K_Color.jpg"

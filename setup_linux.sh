@@ -107,6 +107,16 @@ done
 BUILD_DIR="$(realpath -m "$BUILD_DIR")"
 
 # ---------------------------------------------------------------------------------------------
+# Git stores only the comments of Tools/mapbox_token.txt (filter "mapbox-token" in .gitattributes), so that a pasted
+# Mapbox token is never committed. The filter command is local to each clone, so it is set up here.
+if command -v git >/dev/null && [ -e "$REPO_DIR/.git" ]; then
+    step "Git filter that keeps the Mapbox token out of the repository"
+    git -C "$REPO_DIR" config filter.mapbox-token.clean "sed -e '/^[[:space:]]*#/b' -e '/^[[:space:]]*\$/b' -e d"
+    git -C "$REPO_DIR" config filter.mapbox-token.smudge cat
+    git -C "$REPO_DIR" config filter.mapbox-token.required true
+fi
+
+# ---------------------------------------------------------------------------------------------
 step "1/7 System packages"
 if command -v apt-get >/dev/null && command -v dpkg-query >/dev/null; then
     packages=("${SYSTEM_PACKAGES[@]}")

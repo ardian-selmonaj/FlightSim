@@ -68,6 +68,87 @@ JsonTileSourceFactory JsonTileSourceFactoryRegistry::wrapWithProjectionSupport(J
 	};
 }
 
+//! Creates the images with the primary tile source, and those missing in it with the fallback tile source
+class FallbackTileSource : public TileSource
+{
+public:
+	FallbackTileSource(const TileSourcePtr& primary, const TileSourcePtr& fallback) :
+		mPrimary(primary),
+		mFallback(fallback)
+	{
+		assert(mPrimary);
+		assert(mFallback);
+	}
+
+	osg::ref_ptr<osg::Image> createImage(const skybolt::QuadTreeTileKey& key, std::function<bool()> cancelSupplier) const override
+	{
+		if (hasLevel(*mPrimary, key))
+		{
+			if (osg::ref_ptr<osg::Image> image = mPrimary->createImage(key, cancelSupplier); image)
+			{
+				return image;
+			}
+		}
+		if (hasLevel(*mFallback, key) && !cancelSupplier())
+		{
+			return mFallback->createImage(key, cancelSupplier);
+		}
+		return nullptr;
+	}
+
+	bool hasAnyChildren(const skybolt::QuadTreeTileKey& key) const override
+	{
+		return mPrimary->hasAnyChildren(key) || mFallback->hasAnyChildren(key);
+	}
+
+	std::optional<skybolt::QuadTreeTileKey> getHighestAvailableLevel(const skybolt::QuadTreeTileKey& key) const override
+	{
+		std::optional<QuadTreeTileKey> primaryKey = mPrimary->getHighestAvailableLevel(key);
+		std::optional<QuadTreeTileKey> fallbackKey = mFallback->getHighestAvailableLevel(key);
+		if (primaryKey && fallbackKey)
+		{
+			return (primaryKey->level >= fallbackKey->level) ? primaryKey : fallbackKey;
+		}
+		return primaryKey ? primaryKey : fallbackKey;
+	}
+
+	const std::string& getCacheSha() const override { throw std::runtime_error("Fallback tile source cann't be cached"); }
+
+private:
+	static bool hasLevel(const TileSource& source, const skybolt::QuadTreeTileKey& key)
+	{
+		std::optional<QuadTreeTileKey> availableKey = source.getHighestAvailableLevel(key);
+		return availableKey && availableKey->level == key.level;
+	}
+
+private:
+	TileSourcePtr mPrimary;
+	TileSourcePtr mFallback;
+};
+
+JsonTileSourceFactory JsonTileSourceFactoryRegistry::wrapWithFallbackSupport(JsonTileSourceFactory factory) const
+{
+	return [factory = std::move(factory), this] (const nlohmann::json& json) -> TileSourcePtr {
+		auto tileSource = factory(json);
+		auto i = json.find("fallback");
+		if (i != json.end())
+		{
+			const nlohmann::json& fallbackJson = i.value();
+			auto keyName = fallbackJson.find("apiKeyName");
+			if (keyName != fallbackJson.end())
+			{
+				auto key = mApiKeys.find(keyName->get<std::string>());
+				if (key == mApiKeys.end() || key->second.empty())
+				{
+					return tileSource;
+				}
+			}
+			return std::make_shared<FallbackTileSource>(tileSource, getFactory(fallbackJson.at("format"))(fallbackJson));
+		}
+		return tileSource;
+	};
+}
+
 const std::string& getApiKey(const ApiKeys& keys, const std::string& name)
 {
 	auto i = keys.find(name);
@@ -80,8 +161,9 @@ const std::string& getApiKey(const ApiKeys& keys, const std::string& name)
 
 static JsonTileSourceFactory wrapAll(const JsonTileSourceFactoryRegistry& registry, JsonTileSourceFactory factory)
 {
-	return registry.wrapWithCacheSupport(
-		registry.wrapWithProjectionSupport(factory));
+	return registry.wrapWithFallbackSupport(
+		registry.wrapWithCacheSupport(
+			registry.wrapWithProjectionSupport(factory)));
 }
 
 static IntRangeInclusive readLevelRange(const nlohmann::json& json)

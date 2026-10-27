@@ -8,10 +8,6 @@ import math
 LON = 8.965318
 LAT = 45.975305
 
-# Baldegg
-# LON = 8.274841
-# LAT = 47.182253
-
 def lla(lat_deg, lon_deg, alt_m):
     return sb.LatLonAlt(math.radians(lat_deg), math.radians(lon_deg), float(alt_m))
 

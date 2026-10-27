@@ -36,6 +36,10 @@ public:
 	JsonTileSourceFactory wrapWithCacheSupport(JsonTileSourceFactory factory) const;
 	JsonTileSourceFactory wrapWithProjectionSupport(JsonTileSourceFactory factory) const;
 
+	//! Supports an optional "fallback" tile source, which provides the tiles missing in the tile source,
+	//! e.g. online tiles for the areas without offline tiles. A fallback with an "apiKeyName" is only used if that key is not empty.
+	JsonTileSourceFactory wrapWithFallbackSupport(JsonTileSourceFactory factory) const;
+
 	const std::string& getCacheDirectory() const { return mCacheDirectory; }
 	ApiKeys getApiKeys() const { return mApiKeys; }
 

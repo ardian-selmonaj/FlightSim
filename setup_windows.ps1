@@ -119,6 +119,16 @@ function Find-Python {
 }
 
 # ---------------------------------------------------------------------------------------------
+# Git stores only the comments of Tools\mapbox_token.txt (filter "mapbox-token" in .gitattributes), so that a pasted
+# Mapbox token is never committed. The filter command is local to each clone, so it is set up here.
+if ((Get-Command git -ErrorAction SilentlyContinue) -and (Test-Path (Join-Path $RepoDir ".git"))) {
+    Write-Step "Git filter that keeps the Mapbox token out of the repository"
+    git -C $RepoDir config filter.mapbox-token.clean 'sed -e ''/^[[:space:]]*#/b'' -e ''/^[[:space:]]*$/b'' -e d'
+    git -C $RepoDir config filter.mapbox-token.smudge cat
+    git -C $RepoDir config filter.mapbox-token.required true
+}
+
+# ---------------------------------------------------------------------------------------------
 Write-Step "1/7 Visual Studio 2022 Build Tools"
 $VsPath = Find-VsInstall
 if ($VsPath) {

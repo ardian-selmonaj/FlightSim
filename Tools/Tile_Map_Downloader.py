@@ -10,6 +10,9 @@ from pathlib import Path
 
 ASSETS_DIR = Path(__file__).resolve().parents[1] / "Assets"
 
+# Mapbox access token, only needed for --zoom (as in flightsim_env.py)
+MAPBOX_TOKEN_FILE = Path(__file__).resolve().parent / "mapbox_token.txt"
+
 # Tiles are stored as Assets/<package>/<tile_folder>/{z}/{x}/{y}.<form>, which is where
 # Assets/Globe/Entities/PlanetEarth.json reads them from.
 # zip_url: tiles of Switzerland that were already downloaded from Mapbox, packed as zip.
@@ -29,6 +32,18 @@ TILE_SETS = [
         "zip_url": "https://supsi-my.sharepoint.com/:u:/g/personal/ardian_selmonaj_supsi_ch/IQC3RLT8KjYKSKEZxr-s7Rm6AQ3ukCzpFAOT0MRr-jqHN5Y?e=oOqqbS",
     },
 ]
+
+def read_mapbox_token():
+    """
+    Mapbox access token of MAPBOX_TOKEN_FILE (the first line that is not empty and no # comment),
+    or None if the file does not exist or contains no token.
+    """
+    if MAPBOX_TOKEN_FILE.is_file():
+        for line in MAPBOX_TOKEN_FILE.read_text(encoding="utf-8-sig").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                return line
+    return None
 
 def lat_lon_to_tile(lat, lon, zoom):
     """
@@ -75,9 +90,9 @@ def download_tile(z, x, y, data_type, form, access_token, base_path="mapbox_tile
     
     # Download the tile
     if form == "png":
-        url = f"http://api.mapbox.com/v4/mapbox.{data_type}/{z}/{x}/{y}.{form}raw?access_token={access_token}"
+        url = f"https://api.mapbox.com/v4/mapbox.{data_type}/{z}/{x}/{y}.{form}raw?access_token={access_token}"
     else:
-        url = f"http://api.mapbox.com/v4/mapbox.{data_type}/{z}/{x}/{y}.{form}?access_token={access_token}"
+        url = f"https://api.mapbox.com/v4/mapbox.{data_type}/{z}/{x}/{y}.{form}?access_token={access_token}"
     
     try:
         headers = {
@@ -231,7 +246,8 @@ def find_tile_root(folder, tile_folder):
 def download_switzerland_tiles(tile_set):
     """
     Download the zip with the tiles of Switzerland and unzip it into Assets.
-    Skipped if the tiles already exist in Assets.
+    Skipped if the tiles already exist in Assets. A zip that is already in Assets (e.g. downloaded manually)
+    is unzipped instead of downloaded, and kept.
 
     Args:
         tile_set: Entry of TILE_SETS
@@ -246,21 +262,28 @@ def download_switzerland_tiles(tile_set):
         print(f"Tiles already exist in {target}, skipping download.\n")
         return True
 
-    print(f"Downloading {tile_set['data_type']} tiles of Switzerland into {target}")
     ASSETS_DIR.mkdir(exist_ok=True)
+    local_zip = ASSETS_DIR / f"{tile_set['package']}.zip"
 
     # Temporary folder inside Assets, so that the unzipped tiles can be moved instead of copied
     with tempfile.TemporaryDirectory(prefix="_download_", dir=ASSETS_DIR, ignore_cleanup_errors=True) as tmp:
-        zip_path = Path(tmp) / f"{tile_set['package']}.zip"
-        if not download_file(tile_set["zip_url"], zip_path) or not zipfile.is_zipfile(zip_path):
-            print(f"The link may have expired. Download the zip manually (see README) and unzip it into {ASSETS_DIR}.\n")
-            return False
+        if zipfile.is_zipfile(local_zip):
+            print(f"Unzipping {local_zip} into {target}")
+            zip_path = local_zip
+        else:
+            print(f"Downloading {tile_set['data_type']} tiles of Switzerland into {target}")
+            zip_path = Path(tmp) / f"{tile_set['package']}.zip"
+            if not download_file(tile_set["zip_url"], zip_path) or not zipfile.is_zipfile(zip_path):
+                print(f"The link may have expired. Download the zip manually (see README) into {ASSETS_DIR} "
+                      "and run this script again.\n")
+                return False
 
         print("Unzipping ...")
         unzip_dir = Path(tmp) / "unzipped"
         with zipfile.ZipFile(zip_path) as z:
             z.extractall(unzip_dir)
-        zip_path.unlink()
+        if zip_path != local_zip:
+            zip_path.unlink()
 
         source = find_tile_root(unzip_dir, tile_set["tile_folder"])
         if source is None:
@@ -282,11 +305,14 @@ if __name__ == "__main__":
         description="Download map tiles into Assets. By default, downloads and unzips the tiles of Switzerland "
                     "(skipped if they already exist). For more detail, further zoom levels can be downloaded from Mapbox.")
     parser.add_argument("--zoom", type=int, nargs="+", default=[],
-                        help="additional zoom levels to download from Mapbox, e.g. --zoom 15 16")
+                        help="additional zoom levels to download from Mapbox, e.g. --zoom 15 16 "
+                             f"(needs a Mapbox access token in {MAPBOX_TOKEN_FILE})")
     args = parser.parse_args()
 
-    MAPBOX_ACCESS_TOKEN = "pk.eyJ1IjoiYXJkaWFuLXNlbG1vbmFqIiwiYSI6ImNtbDVmYjlyMDAwYXkzZXMybGV6bWh2enAifQ.kYwMo1PfJVT2bmSzMK9n8g"
-    
+    MAPBOX_ACCESS_TOKEN = read_mapbox_token()
+    if args.zoom and not MAPBOX_ACCESS_TOKEN:
+        parser.error(f"--zoom needs a Mapbox access token. Paste it into {MAPBOX_TOKEN_FILE}.")
+
     # center CH (near Luzern)
     CENTER_LATITUDE = 46.953096
     CENTER_LONGITUDE = 8.439162

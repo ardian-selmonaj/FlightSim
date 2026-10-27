@@ -1,0 +1,4 @@
+# Mapbox access token (https://account.mapbox.com/access-tokens/), read by flightsim_env.py and Tile_Map_Downloader.py.
+# Without a token, FlightSim only shows the offline map tiles in Assets. With a token, the tiles missing there are loaded from Mapbox.
+# Paste the token (pk....) into the line below. Git stores only these comments (filter in .gitattributes), so the token is never committed.
+

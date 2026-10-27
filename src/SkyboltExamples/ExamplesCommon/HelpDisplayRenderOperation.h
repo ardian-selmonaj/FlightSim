@@ -28,7 +28,12 @@ public:
 	void updatePreRender(const vis::RenderContext& context);
 
 private:
+	void draw();
+
+private:
 	osg::ref_ptr<class VisHud> mHud;
+	std::string mMessage;
+	float mAspectRatio = 1.0f;
 };
 
 } // namespace skybolt

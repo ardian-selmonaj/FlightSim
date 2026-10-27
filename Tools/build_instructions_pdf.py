@@ -289,7 +289,7 @@ story += subsection("3.1  Components", table(
      ["Dependencies", f"{c('conanfile.py')}, {c('Conan/Recipes')}", "Conan 2 packages, incl. the JSBSim 1.3.0 recipe"],
      ["Path setup", c("flightsim_env.py"),
       f"{c('import flightsim_env')} before {c('import skybolt')}: finds the build, sets library and asset paths "
-      f"and {c('FLIGHTSIM_FFMPEG')}"],
+      f"and {c('FLIGHTSIM_FFMPEG')}, reads {c('Tools/mapbox_token.txt')}"],
      ["Examples", f"{c('Test_FlightSim_Windows.py')}<br/>{c('Test_FlightSim_Linux.py')}",
       "keyboard flight of a JSBSim aircraft next to an aircraft moved from Python"]],
     [0.15, 0.38, 0.47]))
@@ -356,8 +356,11 @@ story += subsection("3.4  Setup, tools and settings", table(
      [c("Tools/Compare_JSBSim_Python_Cpp.py"),
       f"flies an F-16 in both JSBSims for 120 s at 75 Hz ({c('SECONDS')}, {c('RATE')}) and prints the differences"],
      [c("Tools/Tile_Map_Downloader.py"),
-      f"downloads the map tiles; {c('--zoom 15 16')} for more detail; area: {c('CENTER_LATITUDE')}, "
-      f"{c('CENTER_LONGITUDE')} in the script"],
+      f"downloads (or unzips from {c('Assets')}) the offline map tiles of Switzerland; {c('--zoom 15 16')} for "
+      f"more detail (needs a Mapbox token); area: {c('CENTER_LATITUDE')}, {c('CENTER_LONGITUDE')} in the script"],
+     [c("Tools/mapbox_token.txt"), "optional Mapbox access token (Git stores only the comments, filter set up by the setup). "
+                                   "Without it, only the offline map tiles are shown; with it, the missing tiles are "
+                                   "loaded from Mapbox"],
      [c("Tools/Scale_OSG_Files.py"), f"scales a model, e.g. by {c('8.0')} for the enlarged *Big models; "
                                      f"{c('--to-osgt')} converts it to text"],
      [c("Tools/build_instructions_pdf.py"), f"builds this {c('instructions.pdf')} into the current folder "
@@ -367,13 +370,16 @@ story += subsection("3.4  Setup, tools and settings", table(
      ["Environment variables", f"{c('FLIGHTSIM_BUILD_DIR')}: build folder (default {c('../FlightSimBuild')}) \u00b7 "
                                f"{c('FLIGHTSIM_DIR')}: FlightSim folder for HHMARL (default {c('../FlightSim')}) \u00b7 "
                                f"{c('FLIGHTSIM_FFMPEG')}: ffmpeg of the videos (default: the one of imageio-ffmpeg, "
-                               "otherwise ffmpeg on PATH)"],
+                               "otherwise ffmpeg on PATH) \u00b7 "
+                               f"{c('FLIGHTSIM_MAPBOX_TOKEN')}: Mapbox token (default: the one of "
+                               f"{c('Tools/mapbox_token.txt')})"],
      [c("Settings.json"), f"Windows {c(win('%LOCALAPPDATA%/Skybolt'))}, Linux {c('~/Skybolt')}: {c('display')} "
                           f"({c('multiSampleCount')}, {c('vsync')}, {c('texturePoolSizeMB')}), {c('shadows')}, "
-                          f"{c('clouds')}, {c('mouse.sensitivity')}, {c('tileApiKeys')} (own Mapbox key), "
+                          f"{c('clouds')}, {c('mouse.sensitivity')}, {c('tileApiKeys')} (keep empty, the Mapbox token is in "
+                          f"{c('Tools/mapbox_token.txt')}), "
                           f"{c('jsb.rootDir')} (JSBSim aircraft data)"],
      [c("PlanetEarth.json"), f"{c('Assets/Globe/Entities')}: {c('maxLevel')} of the map tiles; raise it after "
-                             "downloading more zoom levels"],
+                             f"downloading more zoom levels; {c('fallback')}: online Mapbox tiles, used with a token"],
      ["Templates", f"{c('Assets/Movers/Entities')}: {c('SepecatJaguarBlue/Red')} (moved from Python), "
                    f"{c('SepecatJaguarJsbBlue/Red')} (JSBSim {c('f16')}), {c('SepecatJaguarBlueBig/RedBig')} "
                    "(enlarged models)"]],

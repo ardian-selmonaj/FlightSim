@@ -20,11 +20,19 @@ HelpDisplayRenderOperation::HelpDisplayRenderOperation()
 
 void HelpDisplayRenderOperation::setMessage(const std::string& message)
 {
+	mMessage = message;
+	draw();
+}
+
+void HelpDisplayRenderOperation::draw()
+{
 	const float lineHeight = 0.05f;
 	const float textSize = lineHeight * 0.8f;
+	const float margin = 0.1f;
 
+	// The HUD spans -aspectRatio to aspectRatio from the left to the right edge
 	mHud->clear();
-	mHud->drawText(glm::vec2(-0.9f, 0.9f), message, 0.0f, textSize);
+	mHud->drawText(glm::vec2(-mAspectRatio + margin, 1.0f - margin), mMessage, 0.0f, textSize);
 }
 
 void HelpDisplayRenderOperation::setVisible(bool visible)
@@ -47,7 +55,13 @@ bool HelpDisplayRenderOperation::isVisible()
 
 void HelpDisplayRenderOperation::updatePreRender(const vis::RenderContext& context)
 {
-	mHud->setAspectRatio(vis::calcAspectRatio(context));
+	float aspectRatio = vis::calcAspectRatio(context);
+	mHud->setAspectRatio(aspectRatio);
+	if (aspectRatio != mAspectRatio)
+	{
+		mAspectRatio = aspectRatio;
+		draw();
+	}
 }
 
 } // namespace skybolt

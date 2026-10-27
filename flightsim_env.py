@@ -29,6 +29,20 @@ elif sys.platform.startswith("linux"):
 else:
     raise ImportError(f"FlightSim supports Windows and Linux, not '{sys.platform}'.")
 
+MAPBOX_TOKEN_FILE = REPO_DIR / "Tools" / "mapbox_token.txt"
+
+
+def read_mapbox_token():
+    """Returns the Mapbox access token of MAPBOX_TOKEN_FILE (the first line that is not empty and no # comment),
+    or None if the file does not exist or contains no token."""
+    if MAPBOX_TOKEN_FILE.is_file():
+        for line in MAPBOX_TOKEN_FILE.read_text(encoding="utf-8-sig").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                return line
+    return None
+
+
 if not RUN_ENV_FILE.is_file():
     raise ImportError(f"FlightSim build not found in '{SKYBOLT_DIR}'. Run {SETUP_SCRIPT} or set FLIGHTSIM_BUILD_DIR.")
 
@@ -91,6 +105,13 @@ if not os.environ.get("FLIGHTSIM_FFMPEG"):
         os.environ["FLIGHTSIM_FFMPEG"] = imageio_ffmpeg.get_ffmpeg_exe()
     except (ImportError, RuntimeError):
         pass
+
+# The map tiles come from Assets (offline). With a Mapbox token, the tiles missing there are loaded from Mapbox,
+# so that the whole earth is shown. The token is read from MAPBOX_TOKEN_FILE, unless FLIGHTSIM_MAPBOX_TOKEN is set.
+if not os.environ.get("FLIGHTSIM_MAPBOX_TOKEN"):
+    token = read_mapbox_token()
+    if token:
+        os.environ["FLIGHTSIM_MAPBOX_TOKEN"] = token
 
 # Ensure skybolt module is found
 sys.path.append(str(RELEASE))

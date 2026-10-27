@@ -1,2 +1,5 @@
 # Disable EOL conversion globally
 * text=auto eol=lf
+
+# Git stores only the comments of the Mapbox token file, see setup_windows.ps1 and setup_linux.sh
+Tools/mapbox_token.txt filter=mapbox-token
