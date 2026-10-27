@@ -30,6 +30,9 @@ else:
     raise ImportError(f"FlightSim supports Windows and Linux, not '{sys.platform}'.")
 
 MAPBOX_TOKEN_FILE = REPO_DIR / "Tools" / "mapbox_token.txt"
+JOYSTICKS_FILE = REPO_DIR / "Tools" / "joysticks.json"
+# JSBSim models of the aircraft flown by a human, e.g. the F-16 with the corrected rudder (see its README.md)
+MANUAL_AIRCRAFT_DIR = ASSETS / "Movers" / "JSBSimManual"
 
 
 def read_mapbox_token():
@@ -43,6 +46,57 @@ def read_mapbox_token():
     return None
 
 
+def use_dedicated_gpu():
+    """Lets FlightSim render on the dedicated GPU of computers with two GPUs, e.g. laptops with an integrated Intel GPU and an
+    NVIDIA GPU, whose integrated GPU otherwise renders the OpenGL of Python several times slower. Settings of the user are kept."""
+    if sys.platform == "win32":
+        # Windows renders on the integrated GPU unless the program has the graphics preference "High performance" (Settings >
+        # System > Display > Graphics). It is set for the program of this process, the python.exe of the Python installation (the
+        # python.exe of a venv only starts it), and applies to the windows that are opened afterwards, also by this process.
+        import winreg
+        buffer = ctypes.create_unicode_buffer(32768)
+        if not ctypes.windll.kernel32.GetModuleFileNameW(None, buffer, len(buffer)):
+            return
+        program = buffer.value
+        try:
+            with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\DirectX\UserGpuPreferences", 0,
+                                    winreg.KEY_QUERY_VALUE | winreg.KEY_SET_VALUE) as key:
+                try:
+                    winreg.QueryValueEx(key, program)
+                    return  # preference of the user
+                except FileNotFoundError:
+                    winreg.SetValueEx(key, program, 0, winreg.REG_SZ, "GpuPreference=2;")
+            print(f"FlightSim: set the graphics preference of {program} to high performance (Windows Settings > System > "
+                  "Display > Graphics), so that it renders on the dedicated GPU")
+        except OSError as e:
+            print(f"FlightSim: could not set the graphics preference of {program}: {e}")
+    elif os.path.exists("/dev/dxg"):
+        # Under WSL2, the d3d12 driver of Mesa renders on a GPU of Windows, by default the first one, the integrated GPU of laptops
+        if os.path.exists("/usr/lib/wsl/lib/nvidia-smi"):
+            os.environ.setdefault("MESA_D3D12_DEFAULT_ADAPTER_NAME", "NVIDIA")
+    else:
+        # Vendor IDs of the graphics cards by PCI address
+        cards = {}
+        for device in Path("/sys/class/drm").glob("card*/device"):
+            if re.fullmatch(r"card\d+", device.parent.name):
+                try:
+                    cards[device.resolve().name] = (device / "vendor").read_text().strip()
+                except OSError:
+                    pass
+        nvidia, intel = "0x10de", "0x8086"
+        if len(cards) < 2:
+            return
+        if nvidia in cards.values() and os.path.isdir("/proc/driver/nvidia/gpus"):
+            # PRIME render offload of the NVIDIA driver
+            os.environ.setdefault("__NV_PRIME_RENDER_OFFLOAD", "1")
+            os.environ.setdefault("__GLX_VENDOR_LIBRARY_NAME", "nvidia")
+        elif intel in cards.values():
+            # Mesa renders on the GPU of DRI_PRIME, here the first one that is not the integrated Intel GPU
+            dedicated = sorted(address for address, vendor in cards.items() if vendor != intel)
+            if dedicated:
+                os.environ.setdefault("DRI_PRIME", "pci-" + re.sub(r"[:.]", "_", dedicated[0]))
+
+
 if not RUN_ENV_FILE.is_file():
     raise ImportError(f"FlightSim build not found in '{SKYBOLT_DIR}'. Run {SETUP_SCRIPT} or set FLIGHTSIM_BUILD_DIR.")
 
@@ -53,6 +107,8 @@ os.environ["SKYBOLT_PLUGINS_PATH"] = str(PLUGIN)
 # so that scripts also run from other directories, but not twice (packages would be registered twice).
 if not any((Path.cwd() / d).resolve() == ASSETS for d in ("Assets", "../Assets")):
     os.environ["SKYBOLT_ASSETS_PATH"] = os.pathsep.join(filter(None, [str(ASSETS), os.environ.get("SKYBOLT_ASSETS_PATH")]))
+
+use_dedicated_gpu()
 
 if sys.platform == "win32":
     # Run the bat and capture its environment
@@ -112,6 +168,11 @@ if not os.environ.get("FLIGHTSIM_MAPBOX_TOKEN"):
     token = read_mapbox_token()
     if token:
         os.environ["FLIGHTSIM_MAPBOX_TOKEN"] = token
+
+# The manual aircraft is flown with the joysticks, throttles and pedals of JOYSTICKS_FILE while they are connected, otherwise with
+# the keyboard. Set FLIGHTSIM_JOYSTICKS to use another file, or to an empty string to fly with the keyboard only.
+if "FLIGHTSIM_JOYSTICKS" not in os.environ and JOYSTICKS_FILE.is_file():
+    os.environ["FLIGHTSIM_JOYSTICKS"] = str(JOYSTICKS_FILE)
 
 # Ensure skybolt module is found
 sys.path.append(str(RELEASE))

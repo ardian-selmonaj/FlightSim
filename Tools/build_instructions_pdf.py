@@ -171,12 +171,12 @@ def architecture_diagram():
         ("test.py \u00b7 train.py", ["inference and training loops", "settings: test.py, args.py"]),
         ("algorithm/", ["actor and critic networks", "PPO \u00b7 SPO \u00b7 MARS"]),
         ("env/env.py", ["AircombatMARL \u2192 AircraftEnv", "or AircraftEnvHier (commander)"]),
-        ("env/missions.py \u00b7 env/models.py", ["trainable tasks, opponents,", "HumanModel (keyboard)"]),
+        ("env/missions.py \u00b7 env/models.py", ["trainable tasks, opponents,", "HumanModel (joysticks, keyboard)"]),
         ("env/sim.py", ["AircraftSim: one JSBSim 1.3.0", "per aircraft at 75 Hz, CannonSim"]),
         ("env/configs/*.yaml", ["base, hier and level configs:", "aircraft, missions, rewards"]),
     ]
     right = [
-        ("skybolt (Python module)", ["PythonBindings.cpp: sb.FlightSim", "aircraft, JSBSim access, keyboard"]),
+        ("skybolt (Python module)", ["PythonBindings.cpp: sb.FlightSim", "aircraft, JSBSim, keyboard, joysticks"]),
         ("FlightSimVisuals.h \u00b7 FlightSimRecording.h", ["overview camera, trails, tracers,", "labels, MP4 video (ffmpeg)"]),
         ("SkyboltEngine", ["entity templates, sim \u2192 visual", "binding, cameras, input"]),
         ("SkyboltSim", ["world, entities, SimStepper", "(1/dynamicsRate), FdmComponent"]),
@@ -195,7 +195,7 @@ def architecture_diagram():
     texts = [("rendering/flightsim.py", "UI-Bold", 7.6, BR_TEXT), ("", "UI", 4, INK),
              ("FlightSimBridge", "UI-Semibold", 7.4, INK),
              ("hooks: reset, before and", "UI", 6.9, INK), ("after every JSBSim step", "UI", 6.9, INK),
-             ("states \u2192 FlightSim (python)", "UI", 6.9, INK), ("keyboard \u2192 human aircraft", "UI", 6.9, INK),
+             ("states \u2192 FlightSim (python)", "UI", 6.9, INK), ("joysticks, keys \u2192 human aircraft", "UI", 6.9, INK),
              ("tracers, real-time pacing, video", "UI", 6.9, INK), ("", "UI", 4, INK),
              ("FlightSimFDM", "UI-Semibold", 7.4, INK), ("JSBSim of FlightSim (c++)", "UI", 6.9, INK)]
     ty = bt - 12
@@ -221,7 +221,7 @@ story = []
 story += [
     p("FlightSim + HHMARL_3D_NEW", title),
     p("Components, architecture and parameters", subtitle),
-    p("Status 26 October 2026 \u00b7 FlightSim Python API version 4 \u00b7 JSBSim 1.3.0 at 75 Hz", small),
+    p("Status 27 October 2026 \u00b7 FlightSim Python API version 8 \u00b7 JSBSim 1.3.0 at 75 Hz", small),
     Spacer(1, 6),
 ]
 
@@ -230,12 +230,12 @@ story.append(bullets([
     f"<b>HHMARL_3D_NEW</b>: multi-agent air combat environment in Python on JSBSim, with its own on-policy MARL "
     f"training (MAPPO, MASPO, MARS). Training always runs here, without FlightSim.",
     f"<b>FlightSim</b>: a modified Skybolt (C++, OpenSceneGraph) with the Python module {c('skybolt')}. It is used "
-    f"for inference only: realistic rendering, video recording, optionally the C++ JSBSim, and a human pilot on "
-    f"the keyboard.",
+    f"for inference only: realistic rendering, video recording, optionally the C++ JSBSim, and a human pilot with "
+    f"joysticks or the keyboard.",
     f"The repositories are separate clones side by side ({c('Projects/FlightSim')}, {c('Projects/HHMARL_3D_NEW')}). "
     f"HHMARL imports FlightSim only when it is used.",
     "The HHMARL env always computes observations, rewards and terminations. FlightSim displays the aircraft, reads "
-    "the keyboard or simulates the flight dynamics.",
+    "the joysticks and the keyboard or simulates the flight dynamics.",
 ]))
 
 story += section("2  Architecture")
@@ -246,8 +246,8 @@ story += subsection("One env step with FlightSim", ListFlowable([
     ListItem(p("The policies act. Each mission turns its action into JSBSim flight controls (aileron, elevator, "
                "rudder, throttle) and fires the cannon.")),
     ListItem(p(f"{c('sim_steps')} (10) JSBSim steps of 1/{c('sim_freq')} s (1/75 s) follow. Before each step, "
-               "FlightSimBridge hides aircraft that were shot down or crashed, writes the keyboard controls of the "
-               f"human and, in c++ mode, advances the JSBSim of FlightSim ({c('step(1)')}). After each step, it "
+               "FlightSimBridge hides aircraft that were shot down or crashed, writes the controls of the human "
+               f"(joysticks or keyboard) and, in c++ mode, advances the JSBSim of FlightSim ({c('step(1)')}). After each step, it "
                f"copies the states of the Python JSBSim into FlightSim (python mode, {c('step(1)')}), shows tracers "
                f"while a cannon fires and renders in real time ({c('speed')}). While recording, every frame of the "
                "video is rendered, even if the simulation then runs slower than real time.")),
@@ -272,6 +272,8 @@ story += subsection("3.1  Components", table(
     ["Component", "Where", "Role"],
     [["skybolt Python module", c("src/Skybolt/SkyboltPythonBindings/") + "<br/>" + c("PythonBindings.cpp"),
       f"{c('sb.FlightSim')}: window, aircraft, JSBSim access, cameras, keyboard, labels"],
+     ["Joysticks", c("src/Skybolt/SkyboltPythonBindings/") + "<br/>" + c("FlightSimJoysticks.h"),
+      f"joysticks, throttles and pedals of the manual aircraft ({c('Tools/joysticks.json')}), read with SDL 2.32.10"],
      ["Visuals", c("src/Skybolt/SkyboltPythonBindings/") + "<br/>" + c("FlightSimVisuals.h"),
       "overview camera (F3), trails, cannon tracers"],
      ["Recording", c("src/Skybolt/SkyboltPythonBindings/") + "<br/>" + c("FlightSimRecording.h"),
@@ -284,20 +286,22 @@ story += subsection("3.1  Components", table(
      ["SkyboltEngine", c("src/Skybolt/SkyboltEngine"),
       "engine root, entity templates, sim-to-visual binding, camera controllers, keyboard and mouse"],
      ["SkyboltVis", c("src/Skybolt/SkyboltVis"), "OpenSceneGraph rendering: planet, terrain, sky, clouds, ocean, shadows"],
-     ["Assets", c("Assets/"), f"templates ({c('Movers/Entities')}), models, shaders ({c('Core')}), planet and map "
+     ["Assets", c("Assets/"), f"templates ({c('Movers/Entities')}), models, F-16 of the manual aircraft ({c('Movers/JSBSimManual')}), "
+                              f"shaders ({c('Core')}), planet and map "
                               f"tiles ({c('Globe')}, {c('mapbox_*_ch')})"],
-     ["Dependencies", f"{c('conanfile.py')}, {c('Conan/Recipes')}", "Conan 2 packages, incl. the JSBSim 1.3.0 recipe"],
+     ["Dependencies", f"{c('conanfile.py')}, {c('Conan/Recipes')}", "Conan 2 packages, incl. the JSBSim 1.3.0 recipe and SDL 2.32.10 (joysticks)"],
      ["Path setup", c("flightsim_env.py"),
       f"{c('import flightsim_env')} before {c('import skybolt')}: finds the build, sets library and asset paths "
-      f"and {c('FLIGHTSIM_FFMPEG')}, reads {c('Tools/mapbox_token.txt')}"],
+      f"and {c('FLIGHTSIM_FFMPEG')}, reads {c('Tools/mapbox_token.txt')}, sets {c('FLIGHTSIM_JOYSTICKS')}, selects the dedicated GPU "
+      "(Windows: graphics preference of python.exe; WSL2, Linux: environment variables of Mesa and NVIDIA)"],
      ["Examples", f"{c('Test_FlightSim_Windows.py')}<br/>{c('Test_FlightSim_Linux.py')}",
-      "keyboard flight of a JSBSim aircraft next to an aircraft moved from Python"]],
+      "manual flight (joysticks or keyboard) of a JSBSim aircraft next to an aircraft moved from Python"]],
     [0.15, 0.38, 0.47]))
 
 story += subsection("3.2  Python API: sb.FlightSim", table(
     ["Constructor argument", "Default", "Meaning"],
     [[c("x, y, width, height"), c("0, 0, 1080, 720"), "window position and size in pixels"],
-     [c("manual"), c("False"), f"the keyboard flies the aircraft of {c('set_manual_aircraft(id)')}"],
+     [c("manual"), c("False"), f"the joysticks (3.3) or the keyboard fly the aircraft of {c('set_manual_aircraft(id)')}"],
      [c("multiwindow"), c("False"), "second window with a free camera"],
      [c("dynamicsRate"), c("75.0"), "simulation steps per second"],
      [c("headless"), c("False"), "no window, e.g. for comparisons (not with manual or multiwindow)"]],
@@ -316,34 +320,45 @@ story.append(table(
                 f"{c('set_property(id, name, value)')} \u00b7 {c('query_property_catalog(id)')} \u00b7 "
                 f"{c('run_ic(id)')} \u00b7 {c('get_num_engines(id)')} \u00b7 {c('init_engine_running(id, engine)')} "
                 f"\u00b7 {c('get_steady_state(id)')} \u00b7 {c('set_external_control(id, enabled)')}: flight "
-                "controls only from the properties, not from the keyboard"],
+                "controls only from the properties, not from the joysticks or the keyboard"],
      ["Simulation", f"{c('step(substeps=1)')} \u00b7 {c('render()')}: {c('False')} once the window is closed or Esc "
                     f"is pressed \u00b7 {c('frame(dt)')}: steps for {c('dt')} seconds and renders \u00b7 "
                     f"{c('sim_time')} \u00b7 {c('dynamics_step_size')}"],
+     ["Window", f"{c('vsync')} (key V, on: render() waits for the refresh of the monitor) \u00b7 "
+                f"{c('fullscreen')} (key B; a change of the window size stops a recording)"],
      ["Camera", f"{c('select_camera_view(view)')} with {q('Cockpit')}, {q('Follow')}, {q('Overview')} or "
                 f"{q('Free')} \u00b7 {c('set_camera_target(id)')}"],
      ["Labels, trails", f"{c('set_aircraft_label(id, text)')} \u00b7 {c('set_aircraft_color(id, (r, g, b))')} "
                         f"(linear RGB) \u00b7 {c('labels_visible')} \u00b7 {c('trails_visible')} \u00b7 "
-                        f"{c('trail_length')} (m, 30000) \u00b7 {c('clear_trails()')}"],
+                        f"{c('trail_length')} (m, 30000) \u00b7 {c('clear_trails()')} \u00b7 "
+                        f"{c('set_aircraft_throttle(id, throttle)')}: nozzles of the camera target, without JSBSim"],
      ["Cannon", f"{c('fire_tracer(id, speed=1000.0, lifetime=1.0)')}: dark tracer line \u00b7 {c('clear_tracers()')}"],
      ["Recording", f"{c('start_recording(path=None)')}: returns the video file \u00b7 {c('stop_recording()')} \u00b7 "
                    f"{c('recording')} \u00b7 {c('recording_frame_due')} \u00b7 {c('recording_directory')} "
                    f"({q('recordings')}) \u00b7 {c('recording_fps')} (30), see 3.6"],
      ["Manual flight", f"{c('set_manual_aircraft(id)')} \u00b7 {c('get_manual_controls()')}: aileron, elevator, "
-                       f"rudder, throttle \u00b7 {c('consume_fire_requests()')}: Space presses since the last call"],
+                       f"rudder, throttle \u00b7 {c('consume_fire_requests()')}: presses of the fire button or Space since the "
+                       f"last call \u00b7 {c('fire_pressed')}: held"],
      ["Low level", f"{c('engineRoot')} \u00b7 {c('world')} \u00b7 {c('visRoot')} \u00b7 {c('window')} \u00b7 "
                    f"{c('camera')} \u00b7 {c('sb.captureScreenshot(app.visRoot)')}"]],
     [0.14, 0.86]))
 
-story += subsection("3.3  Keyboard and mouse", table(
+story += subsection("3.3  Keyboard, mouse and joysticks", table(
     ["Key", "Action"],
     [["F1 \u00b7 F2 \u00b7 F3 \u00b7 F4", "cockpit \u00b7 follow (external) \u00b7 overview of all aircraft \u00b7 free camera"],
      ["Tab", "next aircraft as camera target"],
      ["L \u00b7 T \u00b7 R", "labels \u00b7 trails \u00b7 start/stop recording a video"],
+     ["V \u00b7 B", "vsync on/off (shown at the top of the window and in the help) \u00b7 full screen on/off"],
      ["H \u00b7 Esc", "help \u00b7 exit"],
      ["Mouse, wheel", "rotate the camera; in the overview, rotate around the aircraft and zoom with the wheel"],
-     ["A/D \u00b7 W/S", "overview: rotate \u00b7 zoom (only without manual flight); free camera: W/S move"],
-     ["Manual flight", "Up/Down pitch down/up \u00b7 Left/Right roll \u00b7 A/D rudder \u00b7 W/S throttle \u00b7 Space cannon"]],
+     ["A/D \u00b7 W/S", "overview: rotate \u00b7 zoom (unless they fly the manual aircraft); free camera: W/S move"],
+     ["Manual flight", "without joysticks: Up/Down pitch down/up \u00b7 Left/Right roll \u00b7 A/D rudder \u00b7 "
+                       "W/S throttle \u00b7 Space cannon"],
+     ["Joysticks", f"the devices of {c('Tools/joysticks.json')} fly the manual aircraft while they are connected, "
+                   "each control otherwise with its keys: stick (roll, pitch), throttle lever, rudder pedals, "
+                   "trigger (fires while held). Device names and axis and button numbers as shown by "
+                   f"{c('Tools/joysticks.py')}, optionally {c('invert')} and {c('deadzone')}; read when "
+                   "FlightSim starts, so changes need no rebuild"]],
     [0.2, 0.8]))
 
 story += subsection("3.4  Setup, tools and settings", table(
@@ -361,18 +376,25 @@ story += subsection("3.4  Setup, tools and settings", table(
      [c("Tools/mapbox_token.txt"), "optional Mapbox access token (Git stores only the comments, filter set up by the setup). "
                                    "Without it, only the offline map tiles are shown; with it, the missing tiles are "
                                    "loaded from Mapbox"],
+     [c("Tools/joysticks.json"), "device and axis or button of each flight control of the manual aircraft: roll, pitch, "
+                                "throttle, rudder, fire (3.3)"],
+     [c("Tools/joysticks.py"), "shows the names and the axes, buttons and hats of the connected joysticks, "
+                              "throttles and pedals"],
      [c("Tools/Scale_OSG_Files.py"), f"scales a model, e.g. by {c('8.0')} for the enlarged *Big models; "
                                      f"{c('--to-osgt')} converts it to text"],
      [c("Tools/build_instructions_pdf.py"), f"builds this {c('instructions.pdf')} into the current folder "
                                             "(Windows fonts)"],
      ["Packages of .venv", f"installed by the setup: {c('conan')} 2.22.0, {c('jsbsim')} 1.3.0, {c('requests')}, "
-                           f"{c('imageio-ffmpeg')} 0.6.0 (ffmpeg of the videos), {c('reportlab')} 5.1.0 (this PDF)"],
+                           f"{c('imageio-ffmpeg')} 0.6.0 (ffmpeg of the videos), {c('reportlab')} 5.1.0 (this PDF), "
+                           f"{c('pygame-ce')} 2.5.8 ({c('Tools/joysticks.py')})"],
      ["Environment variables", f"{c('FLIGHTSIM_BUILD_DIR')}: build folder (default {c('../FlightSimBuild')}) \u00b7 "
                                f"{c('FLIGHTSIM_DIR')}: FlightSim folder for HHMARL (default {c('../FlightSim')}) \u00b7 "
                                f"{c('FLIGHTSIM_FFMPEG')}: ffmpeg of the videos (default: the one of imageio-ffmpeg, "
                                "otherwise ffmpeg on PATH) \u00b7 "
                                f"{c('FLIGHTSIM_MAPBOX_TOKEN')}: Mapbox token (default: the one of "
-                               f"{c('Tools/mapbox_token.txt')})"],
+                               f"{c('Tools/mapbox_token.txt')}) \u00b7 "
+                               f"{c('FLIGHTSIM_JOYSTICKS')}: joystick mapping (default {c('Tools/joysticks.json')}, "
+                               "empty: keyboard only)"],
      [c("Settings.json"), f"Windows {c(win('%LOCALAPPDATA%/Skybolt'))}, Linux {c('~/Skybolt')}: {c('display')} "
                           f"({c('multiSampleCount')}, {c('vsync')}, {c('texturePoolSizeMB')}), {c('shadows')}, "
                           f"{c('clouds')}, {c('mouse.sensitivity')}, {c('tileApiKeys')} (keep empty, the Mapbox token is in "
@@ -381,7 +403,8 @@ story += subsection("3.4  Setup, tools and settings", table(
      [c("PlanetEarth.json"), f"{c('Assets/Globe/Entities')}: {c('maxLevel')} of the map tiles; raise it after "
                              f"downloading more zoom levels; {c('fallback')}: online Mapbox tiles, used with a token"],
      ["Templates", f"{c('Assets/Movers/Entities')}: {c('SepecatJaguarBlue/Red')} (moved from Python), "
-                   f"{c('SepecatJaguarJsbBlue/Red')} (JSBSim {c('f16')}), {c('SepecatJaguarBlueBig/RedBig')} "
+                   f"{c('SepecatJaguarJsbBlue/Red')} (JSBSim {c('f16')}), {c('SepecatJaguarJsbBlue/RedManual')} (F-16 with "
+                   f"corrected rudder for the manual aircraft, {c('aircraftDir')}), {c('SepecatJaguarBlueBig/RedBig')} "
                    "(enlarged models)"]],
     [0.38, 0.62]))
 
@@ -390,7 +413,9 @@ story += subsection("3.5  Visual constants (C++)", table(
     [["Overview camera", "vertical field of view 0.6 rad, looks down at 12\u00b0, margin 1.15 around the aircraft, "
                          "at least 60 m away, zoom factor up to e<super>3</super>"],
      ["Trails", f"a point every 25 m, about 3 px wide, opacity 0.9 fading quadratically along {c('trail_length')}"],
-     ["Tracers", "20 m dark line, 2 px wide, starting 10 m ahead of the aircraft"]],
+     ["Tracers", "20 m dark line, about 4 px wide, starting 10 m ahead of the aircraft"],
+     ["Nozzles", f"discs at the nozzle exits of the camera target ({c('nozzles')} of the entity template), linearly from "
+                 f"black at idle to dark red (linear RGB 0.045, 0.0012, 0) at full throttle ({c('fcs/throttle-cmd-norm')})"]],
     [0.2, 0.8]))
 
 story += subsection("3.6  Video recording", table(
@@ -421,7 +446,7 @@ story += subsection("4.1  Components", table(
                        f"{c('AircraftEnvHier')} (commander)"],
      [c("env/sim.py"), f"{c('AircraftSim')} (one JSBSim per aircraft) and {c('CannonSim')}"],
      [c("env/missions.py"), "trainable tasks: track, cannon, escape, hier"],
-     [c("env/models.py"), f"scripted and pre-trained opponents, {c('HumanModel')} (keyboard via FlightSim)"],
+     [c("env/models.py"), f"scripted and pre-trained opponents, {c('HumanModel')} (joysticks or keyboard via FlightSim)"],
      [f"{c('env/rewards.py')}, {c('env/terminations.py')}", "reward terms and episode ends"],
      [c("env/configs/"), f"{c('base.yaml')}, {c('hier.yaml')}, {c('levels/<task>_L<n>.yaml')} (deep-merged)"],
      [f"{c('env/base_actor/')}, {c('env/catalog.py')}", "scripted base actor and JSBSim property catalog from LAG"],
@@ -442,7 +467,7 @@ story += subsection("4.2  Inference settings (test.py)", table(
                                    f"m/s, {c('heading')}, {c('roll')}, {c('pitch')} in degrees; {c('None')}: config"],
      [c("JSBSIM_STATES"), q("python"), f"{q('python')} or {q('c++')}, see section 2"],
      [f"{c('MANUAL')}, {c('MANUAL_AGENT')}", f"{c('False')}, {q('B2')}",
-      f"a human flies {c('MANUAL_AGENT')}: a copy of B1 if the config has no such aircraft (track, cannon, "
+      f"a human flies {c('MANUAL_AGENT')} with the joysticks or the keyboard: a copy of B1 if the config has no such aircraft (track, cannon, "
       "escape), otherwise it replaces the RL agent (hier: B3)"],
      [c("LOCATION"), c("(8.965318, 45.975305)"), "battle field center (longitude, latitude), here Lugano"],
      [c("run_inference(num_episodes)"), c("500"), "number of episodes"]],
@@ -468,7 +493,8 @@ story += subsection("4.3  FlightSim bridge (env config \"flightsim\")", p(
                                      "skipped), so a slow PC runs slower than real time"],
      [c("TEAM_COLORS"), "B " + c("(0.05, 0.3, 1.0)") + "<br/>R " + c("(1.0, 0.06, 0.04)"),
       "module constant: colors of the labels and trails per team (linear RGB)"],
-     [c("FLIGHTSIM_API_VERSION"), c("4"), "module constant: minimum version of the FlightSim build (4: recording)"]],
+     [c("FLIGHTSIM_API_VERSION"), c("8"), f"module constant: minimum version of the FlightSim build (8: "
+                                           f"{c('set_aircraft_throttle')} for the nozzles)"]],
     [0.25, 0.22, 0.53]))
 
 story += subsection("4.4  Environment (AircombatMARL(task, **kwargs))", table(
@@ -520,7 +546,8 @@ story += subsection("4.6  Missions and interfaces", table(
      [c("model_SPManeuver"), f"self-play opponent (L3) with the pre-trained policy {c('sp_policy_name')}"],
      [c("model_strategy"), "L4 opponent: mixed strategy over the pre-trained L3 (escape: L1) policies"],
      [c("model_hier"), f"commander opponent with {c('opp_hier_strategy')}"],
-     [c("model_human"), f"human pilot via FlightSim ({c('MANUAL')} in test.py)"]],
+     [c("model_human"), f"human pilot with joysticks or the keyboard via FlightSim ({c('MANUAL')} in test.py); "
+                       f"its F-16 has the corrected rudder of FlightSim's {c('Assets/Movers/JSBSimManual')}"]],
     [0.4, 0.6]))
 story.append(Spacer(1, 5))
 story.append(table(
@@ -529,7 +556,9 @@ story.append(table(
      ["Low-level observation", "30 values in [-5, 5]: own position, velocity, body rates, attitude, cannon state and "
                                "ammunition; closest opponent: relative position, velocity and angles"],
      ["Commander action", f"{c('Discrete(3)')}: cannon, track, escape"],
-     ["Cannon", f"range 3500 m, cone \u00b110\u00b0, hit probability 0.8, shots = {c('num_missiles')}"]],
+     ["Cannon", f"range 3500 m, cone \u00b110\u00b0, hit probability 0.8, shots = {c('num_missiles')}; RL agents: a shot "
+                f"fires until it hits or for 12 s, the next one after 16 s ({c('launch()')}); human: fires while the "
+                f"button is held, unlimited ammunition ({c('fire()')})"]],
     [0.22, 0.78]))
 
 story += subsection("4.7  Training arguments (args.py)", table(

@@ -1,0 +1,10 @@
+{
+    "_comment": "Flight controls of the manual aircraft from joysticks, throttles and pedals (see README.md), read when FlightSim starts. Device names and axis and button numbers as shown by Tools/joysticks.py. Each control comes from the keyboard while its device is not connected.",
+    "_axes": "Axis values as shown by Tools/joysticks.py: roll -1 left to 1 right, pitch -1 forward (nose down) to 1 back (nose up), throttle -1 idle to 1 full, rudder -1 left to 1 right. invert reverses an axis, deadzone sets the values closer to the center to zero (as fraction of the half range).",
+
+    "roll":     {"device": "Joystick - HOTAS Warthog", "axis": 0, "invert": false, "deadzone": 0.0},
+    "pitch":    {"device": "Joystick - HOTAS Warthog", "axis": 1, "invert": false, "deadzone": 0.0},
+    "throttle": {"device": "Throttle - HOTAS Warthog", "axis": 2, "invert": true},
+    "rudder":   {"device": "TPR T.Pendular Rudder", "axis": 2, "invert": false, "deadzone": 0.0},
+    "fire":     {"device": "Joystick - HOTAS Warthog", "button": 0}
+}

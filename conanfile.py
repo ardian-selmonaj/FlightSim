@@ -46,6 +46,14 @@ class SkyboltConan(ConanFile):
     def configure(self):
         self.options["openscenegraph-mr"].with_curl = True # Required for loading terrain tiles from http sources
         self.options["bullet3"].double_precision = True
+        # Only the joysticks of SDL are used, so it is built without SDL2main, OpenGL, Vulkan and the audio and video libraries of Linux
+        self.options["sdl"].sdl2main = False
+        self.options["sdl"].opengl = False
+        self.options["sdl"].opengles = False
+        self.options["sdl"].vulkan = False
+        if self.settings.os == "Linux":
+            for option in ("alsa", "pulse", "x11", "wayland", "libunwind", "iconv"):
+                setattr(self.options["sdl"], option, False)
         if self.options.get_safe("shared"):
             self.options.rm_safe("fPIC")
 
@@ -79,7 +87,10 @@ class SkyboltConan(ConanFile):
 
         if self.options.enable_python:
             self.requires("pybind11/2.13.6")
-            
+            # Joysticks, throttles and pedals of the manual aircraft (Tools/joysticks.json). Same SDL as pygame-ce of the setup scripts,
+            # so the device names and the numbers of the axes and buttons are the ones shown by Tools/joysticks.py
+            self.requires("sdl/2.32.10")
+
         if self.options.enable_qt:
             self.requires("qt/6.10.1", transitive_headers=True)
             self.include_package("skybolt-widgets", "1.0.0", transitive_headers=True)

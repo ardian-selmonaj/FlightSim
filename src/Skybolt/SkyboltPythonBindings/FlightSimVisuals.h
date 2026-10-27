@@ -6,6 +6,7 @@
 
 #include <SkyboltCommon/Math/FirstOrderLag.h>
 #include <SkyboltCommon/Math/MathUtility.h>
+#include <SkyboltEngine/VisHud.h>
 #include <SkyboltEngine/SimVisBinding/GeocentricToNedConverter.h>
 #include <SkyboltEngine/SimVisBinding/SimVisBinding.h>
 #include <SkyboltSim/CameraController/CameraController.h>
@@ -15,17 +16,21 @@
 #include <SkyboltVis/DefaultRootNode.h>
 #include <SkyboltVis/OsgGeometryHelpers.h>
 #include <SkyboltVis/OsgStateSetHelpers.h>
+#include <SkyboltVis/RenderContext.h>
 #include <SkyboltVis/Scene.h>
+#include <SkyboltVis/RenderOperation/RenderOperation.h>
 
 #include <osg/Geode>
 #include <osg/Geometry>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <deque>
 #include <functional>
 #include <map>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace skybolt {
@@ -622,7 +627,7 @@ public:
 
 private:
 	static constexpr double msLength = 20; //!< m
-	static constexpr double msHalfWidthPixels = 2.0;
+	static constexpr double msHalfWidthPixels = 4.0; //!< the edges are transparent, so the line looks about 4 pixels wide
 	static inline const osg::Vec4f msColor = osg::Vec4f(0.02f, 0.02f, 0.02f, 0.85f); //!< dark gray, as displayed
 
 	struct Tracer
@@ -640,6 +645,152 @@ private:
 	CameraPoseProvider mCamera;
 	PixelSizeProvider mPixelSize;
 	std::vector<Tracer> mTracers;
+};
+
+//! Shows the engine nozzles of an aircraft, e.g. of the camera target, as discs whose color goes linearly from black at idle to
+//! dark red at full throttle. The nozzles come from the entity template of the aircraft (see FlightSim::add_aircraft()).
+class NozzleGlow : public SimVisBinding
+{
+public:
+	//! Exit of a nozzle in the body axes of the aircraft (x forward, y right, z down)
+	struct Nozzle
+	{
+		sim::Vector3 positionRelBody; //!< center in m
+		double radius; //!< m
+	};
+
+	struct Aircraft
+	{
+		sim::Vector3 position; //!< geocentric
+		sim::Quaternion orientation; //!< geocentric
+		std::vector<Nozzle> nozzles;
+		double throttle; //!< 0 (idle) to 1 (full)
+	};
+
+	using AircraftProvider = std::function<std::optional<Aircraft>()>;
+
+	NozzleGlow(vis::Scene* scene, const osg::ref_ptr<osg::Program>& program, AircraftProvider aircraft) :
+		mScene(scene),
+		mNode(std::make_shared<detail::TransparentLinesNode>(program)),
+		mAircraft(std::move(aircraft)),
+		mGeometry(new osg::Geometry),
+		mVertices(new osg::Vec3Array),
+		mColors(new osg::Vec4Array),
+		mTriangles(new osg::DrawElementsUInt(GL_TRIANGLES))
+	{
+		// The arrays are refilled each time, see RibbonGeometry
+		vis::configureDrawable(*mGeometry);
+		mGeometry->setDataVariance(osg::Object::DYNAMIC);
+		mGeometry->setVertexArray(mVertices);
+		mGeometry->setColorArray(mColors, osg::Array::BIND_PER_VERTEX);
+		mGeometry->addPrimitiveSet(mTriangles);
+		mNode->getGeode()->addDrawable(mGeometry);
+		mScene->addObject(mNode);
+	}
+
+	~NozzleGlow() override
+	{
+		mScene->removeObject(mNode);
+	}
+
+	void syncVis(const GeocentricToNedConverter& converter) override
+	{
+		mVertices->clear();
+		mColors->clear();
+		mTriangles->clear();
+		if (std::optional<Aircraft> aircraft = mAircraft(); aircraft)
+		{
+			float throttle = float(math::clamp(aircraft->throttle, 0.0, 1.0));
+			const osg::Vec4f color = detail::toSceneColor(msIdleColor * (1.0f - throttle) + msFullThrottleColor * throttle);
+			auto addVertex = [&] (const sim::Vector3& positionRelBody) {
+				mVertices->push_back(osg::Vec3(converter.convertPosition(aircraft->position + aircraft->orientation * positionRelBody)));
+				mColors->push_back(color);
+			};
+
+			// A fan of triangles around the center of each nozzle, in the plane perpendicular to the body x axis
+			for (const Nozzle& nozzle : aircraft->nozzles)
+			{
+				GLuint center = GLuint(mVertices->size());
+				addVertex(nozzle.positionRelBody);
+				for (int i = 0; i < msSegments; ++i)
+				{
+					double angle = 2.0 * math::piD() * double(i) / double(msSegments);
+					addVertex(nozzle.positionRelBody + sim::Vector3(0, nozzle.radius * std::cos(angle), nozzle.radius * std::sin(angle)));
+					for (GLuint index : {center, center + 1 + GLuint(i), center + 1 + GLuint((i + 1) % msSegments)})
+					{
+						mTriangles->push_back(index);
+					}
+				}
+			}
+		}
+		mVertices->dirty();
+		mColors->dirty();
+		mTriangles->dirty();
+		mGeometry->dirtyBound();
+	}
+
+private:
+	static constexpr int msSegments = 32;
+	static inline const osg::Vec4f msIdleColor = osg::Vec4f(0.0f, 0.0f, 0.0f, 1.0f); //!< as displayed
+	static inline const osg::Vec4f msFullThrottleColor = osg::Vec4f(0.045f, 0.0012f, 0.0f, 1.0f); //!< dark red as displayed, in linear RGB
+
+	vis::Scene* mScene;
+	std::shared_ptr<detail::TransparentLinesNode> mNode;
+	AircraftProvider mAircraft;
+	osg::ref_ptr<osg::Geometry> mGeometry;
+	osg::ref_ptr<osg::Vec3Array> mVertices;
+	osg::ref_ptr<osg::Vec4Array> mColors;
+	osg::ref_ptr<osg::DrawElementsUInt> mTriangles;
+};
+
+//! Short message at the top of the window, e.g. the mode that a key switched. As operation with the priority
+//! vis::RenderOperationOrder::Hud, it is not recorded (see VideoRecorder).
+class WindowNotice : public vis::RenderOperation
+{
+public:
+	WindowNotice() :
+		mHud(new VisHud)
+	{
+	}
+
+	//! Shows the message for the given time in seconds, replacing the previous one
+	void show(const std::string& message, double seconds = 2.0)
+	{
+		mMessage = message;
+		mHideTime = std::chrono::steady_clock::now() + std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(seconds));
+		mAspectRatio = 0; // drawn again
+		if (mHud->getNumParents() == 0)
+		{
+			addChild(mHud);
+		}
+	}
+
+	void updatePreRender(const vis::RenderContext& context) override
+	{
+		if (mHud->getNumParents() == 0)
+		{
+			return;
+		}
+		if (std::chrono::steady_clock::now() >= mHideTime)
+		{
+			removeChild(mHud);
+			return;
+		}
+		float aspectRatio = vis::calcAspectRatio(context);
+		if (aspectRatio != mAspectRatio)
+		{
+			mAspectRatio = aspectRatio;
+			mHud->setAspectRatio(aspectRatio);
+			mHud->clear();
+			mHud->drawText(glm::vec2(0.0f, 0.85f), mMessage, 0.0f, 0.05f, HudDrawer::Alignment::Center);
+		}
+	}
+
+private:
+	osg::ref_ptr<VisHud> mHud;
+	std::string mMessage;
+	std::chrono::steady_clock::time_point mHideTime;
+	float mAspectRatio = 0; //!< of the drawn message, 0 if not drawn
 };
 
 } // namespace skybolt

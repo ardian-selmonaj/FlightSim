@@ -4,6 +4,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+#include "FlightSimJoysticks.h"
 #include "FlightSimRecording.h"
 #include "FlightSimVisuals.h"
 #include "PyComponent.h"
@@ -192,6 +193,30 @@ static std::vector<LogicalAxisPtr> createAircraftInputAxesKeyboard(const InputPl
 	return logicalAxes;
 }
 
+//! @returns the axes of the manual aircraft for EntityInputSystem as createAircraftInputAxesKeyboard(): pitch (positive down), roll,
+//! throttle and rudder. Each comes from its joystick while it is connected, otherwise from the keyboard.
+static std::vector<LogicalAxisPtr> createAircraftInputAxes(const InputPlatform& inputPlatform, const std::shared_ptr<Joysticks>& joysticks)
+{
+	std::vector<LogicalAxisPtr> keys = createAircraftInputAxesKeyboard(inputPlatform);
+	if (!joysticks)
+	{
+		return keys;
+	}
+	// The joystick axes go from -1 to 1 for stick forward to back, stick left to right, idle to full throttle and left to right pedal
+	return {
+		std::make_shared<JoystickOrKeyAxis>(joysticks, JoystickControl::Pitch, keys[0], -1.0f),
+		std::make_shared<JoystickOrKeyAxis>(joysticks, JoystickControl::Roll, keys[1]),
+		std::make_shared<JoystickOrKeyAxis>(joysticks, JoystickControl::Throttle, keys[2], 0.5f, 0.5f),
+		std::make_shared<JoystickOrKeyAxis>(joysticks, JoystickControl::Rudder, keys[3])
+	};
+}
+
+//! @returns true if W/S and A/D do not fly the manual aircraft, because its throttle and rudder come from joysticks
+static bool areCameraKeysFree(const Joysticks* joysticks)
+{
+	return joysticks && joysticks->isActive(JoystickControl::Throttle) && joysticks->isActive(JoystickControl::Rudder);
+}
+
 //! Calls a handler for every pressed key, also when the keyboard repeats a key held down (repeat is then true)
 class KeyPressListener : public EventListener
 {
@@ -222,44 +247,34 @@ private:
 	std::set<KeyCode> mHeldKeys;
 };
 
-static osg::ref_ptr<HelpDisplayRenderOperation> createHelpDisplay(bool manualControl = false)
+//! @returns the help lines of the flight controls of the manual aircraft: the joystick of a control while it is connected, otherwise its keys
+static std::string createFlightControlsHelp(const Joysticks* joysticks)
 {
-	std::string helpMessage;
+	auto line = [joysticks] (JoystickControl control, const std::string& name, const std::string& keys) {
+		if (!joysticks || !joysticks->isActive(control))
+		{
+			return keys;
+		}
+		const JoystickInput& input = *joysticks->getInput(control);
+		return name + ": " + input.device + (input.button >= 0 ? " button " + std::to_string(input.button) : "") + "\n";
+	};
+	return line(JoystickControl::Throttle, "Throttle", "W: Throttle +\nS: Throttle -\n")
+		+ line(JoystickControl::Rudder, "Rudder", "A: Rudder left\nD: Rudder right\n")
+		+ line(JoystickControl::Pitch, "Pitch", "Up: Pitch down\nDown: Pitch up\n")
+		+ line(JoystickControl::Roll, "Roll", "Left: Roll left\nRight: Roll right\n")
+		+ line(JoystickControl::Fire, "Fire", "Space: Fire\n");
+}
+
+//! @returns the help message, with manual control including the flight controls of the joysticks or the keyboard
+static std::string createHelpMessage(bool manualControl, const Joysticks* joysticks, bool vsync)
+{
+	std::string message = "= Controls =\n";
 	if (manualControl)
 	{
-		helpMessage =
-R"(= Controls =
-
-W: Throttle +
-S: Throttle -
-A: Rudder left
-D: Rudder right
-Up: Pitch down
-Down: Pitch up
-Left: Roll left
-Right: Roll right
-Space: Fire
-
-F1: Cockpit view
-F2: External view
-F3: Overview of all aircraft
-F4: Free view
-Tab: Next aircraft
-L: Toggle labels
-T: Toggle trails
-R: Start/stop recording
-
-H: Toggle help message
-Esc: Exit
-Mouse: Pan camera
-Mouse wheel: Zoom (overview)
-)";
+		message += "\n" + createFlightControlsHelp(joysticks) + "\n";
 	}
-	else
-	{
-		helpMessage =
-R"(= Controls =
-F1: Cockpit view
+	message +=
+R"(F1: Cockpit view
 F2: External view
 F3: Overview of all aircraft
 F4: Free view
@@ -267,7 +282,14 @@ Tab: Next aircraft
 L: Toggle labels
 T: Toggle trails
 R: Start/stop recording
+)";
+	message += std::string("V: Toggle vsync (now ") + (vsync ? "on" : "off") + ")\nB: Toggle full screen\n";
 
+	bool cameraKeys = !manualControl || areCameraKeysFree(joysticks);
+	if (cameraKeys)
+	{
+		message +=
+R"(
 In Overview (F3):
 Mouse, A/D: Rotate around the aircraft
 W/S, mouse wheel: Zoom
@@ -275,14 +297,22 @@ W/S, mouse wheel: Zoom
 In Free view (F4):
 Shift (hold) + Mouse: Camera tilt modifier
 W/S: Move forward/back
-
-H: Toggle help message
-Esc: Exit
-Mouse: Rotate camera
 )";
 	}
+
+	message += "\nH: Toggle help message\nEsc: Exit\n";
+	message += manualControl ? "Mouse: Pan camera\n" : "Mouse: Rotate camera\n";
+	if (!cameraKeys)
+	{
+		message += "Mouse wheel: Zoom (overview)\n";
+	}
+	return message;
+}
+
+static osg::ref_ptr<HelpDisplayRenderOperation> createHelpDisplay(const std::string& message)
+{
 	osg::ref_ptr<HelpDisplayRenderOperation> hd = new HelpDisplayRenderOperation();
-	hd->setMessage(helpMessage);
+	hd->setMessage(message);
 	return hd;
 }
 
@@ -646,9 +676,11 @@ public:
 				[this] { return stepper->getTime(); },
 				[this] { return getCameraPose(); },
 				[this] { return getPixelSizeAtUnitDistance(); });
+			nozzleGlow = std::make_shared<NozzleGlow>(engineRoot->scene.get(), linesProgram, [this] { return getNozzleGlowAircraft(); });
 			auto simVisSystem = sim::findRequiredSystem<SimVisSystem>(*engineRoot->systemRegistry);
 			simVisSystem->addBinding(trails);
 			simVisSystem->addBinding(tracers);
+			simVisSystem->addBinding(nozzleGlow);
 		}
 
 		// second Window
@@ -677,9 +709,23 @@ public:
 			inputPlatform = std::make_shared<InputPlatformOsg>(window->getView());
 			if (manualControl)
 			{
-				logicalAxes = createAircraftInputAxesKeyboard(*inputPlatform);
-				engineRoot->systemRegistry->push_back(std::make_shared<InputSystem>(inputPlatform, logicalAxes));
-				cameraInputSystem = std::make_shared<CameraInputSystem>(inputPlatform);
+				// The joysticks of Tools/joysticks.json fly the manual aircraft while they are connected, otherwise the keyboard
+				joysticks = createJoysticksFromEnvironment();
+				logicalAxes = createAircraftInputAxes(*inputPlatform, joysticks);
+				std::vector<LogicalAxisPtr> axes = logicalAxes;
+				if (joysticks)
+				{
+					engineRoot->systemRegistry->push_back(joysticks);
+
+					// W/S and A/D move the camera as without manual control while they do not fly the aircraft
+					for (const auto& [type, axis] : createDefaultCameraInputAxes(*inputPlatform))
+					{
+						cameraAxes[type] = std::make_shared<EnabledAxis>(axis, [joysticks = joysticks] { return areCameraKeysFree(joysticks.get()); });
+						axes.push_back(cameraAxes[type]);
+					}
+				}
+				engineRoot->systemRegistry->push_back(std::make_shared<InputSystem>(inputPlatform, axes));
+				cameraInputSystem = std::make_shared<CameraInputSystem>(inputPlatform, cameraAxes);
 			}
 			else
 			{
@@ -705,11 +751,22 @@ public:
 			keyListener = std::make_shared<KeyPressListener>([this] (KeyCode code, bool repeat) { onKeyPressed(code, repeat); });
 			inputPlatform->getEventEmitter()->addEventListener<KeyEvent>(keyListener.get());
 
-			helpDisplay = createHelpDisplay(manualControl);
+			helpDisplay = createHelpDisplay(createHelpMessage(manualControl, joysticks.get(), window->isVsyncEnabled()));
 			window->getRenderOperationSequence().addOperation(helpDisplay, (int)vis::RenderOperationOrder::Hud);
 
 			helpToggleListener = std::make_shared<HelpDisplayToggleEventListener>(helpDisplay);
 			inputPlatform->getEventEmitter()->addEventListener<KeyEvent>(helpToggleListener.get());
+
+			// Shows the modes switched by keys, e.g. vsync
+			notice = new WindowNotice;
+			window->getRenderOperationSequence().addOperation(notice, (int)vis::RenderOperationOrder::Hud);
+
+			if (joysticks)
+			{
+				// The help message shows the devices of the flight controls, and the fire button fires like the fire key
+				joysticks->devicesChanged = [this] { updateHelpMessage(); };
+				joysticks->fireButtonPressed = [this] { ++fireRequests; };
+			}
 
 			// Records the view without the help message, which has the HUD priority
 			recorder = std::make_unique<VideoRecorder>(*window);
@@ -743,6 +800,7 @@ public:
 			auto simVisSystem = sim::findRequiredSystem<SimVisSystem>(*engineRoot->systemRegistry);
 			simVisSystem->removeBinding(trails);
 			simVisSystem->removeBinding(tracers);
+			simVisSystem->removeBinding(nozzleGlow);
 		}
 		for (const auto& [id, display] : displays)
 		{
@@ -756,9 +814,12 @@ public:
 	//! Adds an aircraft of the entity template at the position (latitude and longitude in radians, altitude in meters), with roll, pitch, yaw
 	//! in radians relative to north-east-down and the velocity in north-east-down in m/s. An existing aircraft with the same ID is replaced.
 	//! The position, orientation and velocity are the initial conditions of a JSBSim aircraft, unless run_ic() is called.
+	//! The template can have the engine nozzles of the aircraft, which glow with the throttle while the aircraft is the camera target:
+	//! "nozzles": [{"positionRelBody": [x, y, z], "radius": r}, ...] next to "components", in m in the body axes (x forward, y right, z down).
 	void add_aircraft(int id, const std::string& templateName, const LatLonAlt& position, const Vector3& rpy, const Vector3& velocityNed)
 	{
 		sim::EntityPtr aircraft = engineRoot->entityFactory->createEntity(templateName);
+		std::vector<NozzleGlow::Nozzle> nozzles = readNozzles(templateName);
 		setAircraftState(*aircraft, position, rpy, velocityNed);
 		if (auto fdm = aircraft->getFirstComponent<FdmComponent>(); fdm)
 		{
@@ -772,6 +833,8 @@ public:
 		}
 		world.addEntity(aircraft);
 		aircraftMap[id] = aircraft;
+		aircraftNozzles[id] = std::move(nozzles);
+		aircraftThrottles.erase(id);
 		hiddenAircraft.erase(id);
 		if (trails)
 		{
@@ -797,6 +860,8 @@ public:
 		}
 		engineRoot->scenario->world.removeEntity(it->second.get());
 		aircraftMap.erase(it);
+		aircraftNozzles.erase(id);
+		aircraftThrottles.erase(id);
 		hiddenAircraft.erase(id);
 		if (trails)
 		{
@@ -924,6 +989,15 @@ public:
 		}
 	}
 
+	//! Sets the throttle in [0, 1] of an aircraft without flight dynamics, e.g. moved from Python, which its nozzles show while it is the
+	//! camera target (see add_aircraft()). Aircraft with JSBSim show their throttle command fcs/throttle-cmd-norm instead, the position
+	//! of the throttle lever (the F-16 has afterburner above 0.5).
+	void set_aircraft_throttle(int id, double throttle)
+	{
+		getAircraft(id);
+		aircraftThrottles[id] = math::clamp(throttle, 0.0, 1.0);
+	}
+
 	bool get_labels_visible() const { return labelsVisible; }
 	void set_labels_visible(bool visible) { labelsVisible = visible; }
 
@@ -954,8 +1028,8 @@ public:
 		}
 	}
 
-	//! The keyboard flies this aircraft, which needs FlightSim(manual=True). The camera is set to the aircraft.
-	//! A JSBSim aircraft is controlled by the keyboard unless set_external_control() was called,
+	//! The joysticks (see Tools/joysticks.json) or the keyboard fly this aircraft, which needs FlightSim(manual=True). The camera is set
+	//! to the aircraft. A JSBSim aircraft is controlled by them unless set_external_control() was called,
 	//! otherwise read the controls with get_manual_controls().
 	void set_manual_aircraft(int id)
 	{
@@ -969,7 +1043,8 @@ public:
 		set_camera_target(id);
 	}
 
-	//! @returns the keyboard controls of the manual aircraft as JSBSim flight control commands: aileron, elevator, rudder, throttle
+	//! @returns the controls of the manual aircraft from the joysticks or the keyboard as JSBSim flight control commands: aileron, elevator,
+	//! rudder, throttle
 	std::array<double, 4> get_manual_controls() const
 	{
 		if (!manualAircraftId)
@@ -988,12 +1063,23 @@ public:
 		return { commands.aileron, commands.elevator, commands.rudder, commands.throttle };
 	}
 
-	//! @returns the number of presses of the fire key (space) since the last call
+	//! @returns the number of presses of the fire button of the joystick, or without it of the fire key (space), since the last call
 	int consume_fire_requests()
 	{
 		int requests = fireRequests;
 		fireRequests = 0;
 		return requests;
+	}
+
+	//! @returns true while the fire button of the joystick, or without it the fire key (space), is held
+	bool is_fire_pressed() const
+	{
+		if (isJoystickActive(JoystickControl::Fire))
+		{
+			return joysticks->isPressed(JoystickControl::Fire);
+		}
+		InputDevices keyboards = inputPlatform ? inputPlatform->getInputDevicesOfType(InputDeviceTypeKeyboard) : InputDevices();
+		return manualControl && !keyboards.empty() && keyboards.front()->isButtonPressed(KC_SPACE);
 	}
 
 	//! Shows a cannon shot as a short dark line flying from the aircraft's nose with the given speed relative to the aircraft,
@@ -1073,6 +1159,31 @@ public:
 
 	double get_sim_time() const { return stepper->getTime(); }
 	double get_dynamics_step_size() const { return stepper->getDynamicsStepSize(); }
+
+	//! Vertical synchronization (key V): the frames are shown at the refreshes of the monitor and render() waits for them, otherwise
+	//! render() returns as soon as the frame is drawn. On by default. A change is shown at the top of the window for two seconds.
+	bool get_vsync() const { return window && window->isVsyncEnabled(); }
+	void set_vsync(bool enabled)
+	{
+		if (!window)
+		{
+			throw std::runtime_error("FlightSim: vsync needs a window, so it cannot be used with headless");
+		}
+		window->setVsyncEnabled(enabled);
+		notice->show(enabled ? "Vsync on" : "Vsync off");
+		updateHelpMessage();
+	}
+
+	//! Full screen (key B): the window covers the whole monitor without its border, otherwise it has its previous position and size
+	bool get_fullscreen() const { return window && window->isFullscreen(); }
+	void set_fullscreen(bool fullscreen)
+	{
+		if (!window)
+		{
+			throw std::runtime_error("FlightSim: full screen needs a window, so it cannot be used with headless");
+		}
+		window->setFullscreen(fullscreen);
+	}
 
 	//! Starts recording the view of the window into an MP4 video file, until stop_recording(), the window is closed or the FlightSim
 	//! is deleted. Key R starts and stops recording as well. The video shows the view as in the window, with the labels, trails and
@@ -1208,7 +1319,7 @@ private:
 	{
 		if (aircraft)
 		{
-			// The keyboard sets these control inputs (see EntityInputSystem), which templates without flight dynamics do not have
+			// The joysticks or the keyboard set these control inputs (see EntityInputSystem), which templates without flight dynamics do not have
 			auto inputs = aircraft->getFirstComponentRequired<ControlInputsComponent>();
 			inputs->createOrGet<glm::vec2>("stick", glm::vec2(0.0f), posNegUnitRange<glm::vec2>());
 			inputs->createOrGet<float>("throttle", 0.0f);
@@ -1216,6 +1327,21 @@ private:
 		}
 		entityInputSystem->setEntity(aircraft);
 		hudSystem->setEntity(aircraft.get());
+	}
+
+	//! @returns true if the control of the manual aircraft comes from its joystick instead of the keyboard
+	bool isJoystickActive(JoystickControl control) const
+	{
+		return joysticks && joysticks->isActive(control);
+	}
+
+	//! Shows the current flight controls and vsync mode in the help message
+	void updateHelpMessage()
+	{
+		if (helpDisplay)
+		{
+			helpDisplay->setMessage(createHelpMessage(manualControl, joysticks.get(), window->isVsyncEnabled()));
+		}
 	}
 
 	void updateHud()
@@ -1258,8 +1384,20 @@ private:
 					toggleRecording();
 				}
 				break;
+			case KC_V:
+				if (!repeat)
+				{
+					set_vsync(!get_vsync());
+				}
+				break;
+			case KC_B:
+				if (!repeat)
+				{
+					set_fullscreen(!get_fullscreen());
+				}
+				break;
 			case KC_SPACE:
-				if (manualControl)
+				if (manualControl && !isJoystickActive(JoystickControl::Fire)) // the fire button replaces the key while its joystick is connected
 				{
 					++fireRequests;
 				}
@@ -1373,6 +1511,64 @@ private:
 		return result;
 	}
 
+	//! @returns the engine nozzles of the entity template, see add_aircraft()
+	std::vector<NozzleGlow::Nozzle> readNozzles(const std::string& templateName) const
+	{
+		const auto& templates = engineRoot->entityFactory->getTemplateJsonMap();
+		auto it = templates.find(templateName);
+		std::vector<NozzleGlow::Nozzle> nozzles;
+		if (it == templates.end() || !it->second.contains("nozzles"))
+		{
+			return nozzles;
+		}
+		try
+		{
+			for (const nlohmann::json& nozzle : it->second.at("nozzles"))
+			{
+				std::array<double, 3> position = nozzle.at("positionRelBody").get<std::array<double, 3>>();
+				nozzles.push_back({Vector3(position[0], position[1], position[2]), nozzle.at("radius").get<double>()});
+			}
+		}
+		catch (const nlohmann::json::exception& e)
+		{
+			throw std::runtime_error("FlightSim: invalid nozzles of the entity template " + templateName + ": " + e.what());
+		}
+		return nozzles;
+	}
+
+	//! @returns the throttle in [0, 1] shown by the nozzles: fcs/throttle-cmd-norm of JSBSim, otherwise the one of set_aircraft_throttle()
+	double getThrottle(int id, const sim::Entity& aircraft) const
+	{
+		if (auto fdm = aircraft.getFirstComponent<FdmComponent>(); fdm)
+		{
+			return math::clamp(fdm->getProperty("fcs/throttle-cmd-norm"), 0.0, 1.0);
+		}
+		auto it = aircraftThrottles.find(id);
+		return (it != aircraftThrottles.end()) ? it->second : 0.0;
+	}
+
+	//! @returns the camera target, whose nozzles are shown, if it is visible and has nozzles
+	std::optional<NozzleGlow::Aircraft> getNozzleGlowAircraft() const
+	{
+		if (!cameraTargetId || !isVisible(*cameraTargetId))
+		{
+			return std::nullopt;
+		}
+		auto aircraft = aircraftMap.find(*cameraTargetId);
+		auto nozzles = aircraftNozzles.find(*cameraTargetId);
+		if (aircraft == aircraftMap.end() || nozzles == aircraftNozzles.end() || nozzles->second.empty())
+		{
+			return std::nullopt;
+		}
+		std::optional<Vector3> position = getPosition(*aircraft->second);
+		std::optional<Quaternion> orientation = getOrientation(*aircraft->second);
+		if (!position || !orientation)
+		{
+			return std::nullopt;
+		}
+		return NozzleGlow::Aircraft{*position, *orientation, nozzles->second, getThrottle(aircraft->first, *aircraft->second)};
+	}
+
 	CameraPose getCameraPose() const
 	{
 		return {getPosition(*simCamera).value_or(math::dvec3Zero()),
@@ -1440,7 +1636,7 @@ private:
 	double wallTime = 0.0;
 
 	std::unique_ptr<vis::VisRoot> visRoot;
-	std::shared_ptr<vis::Window> window;
+	std::shared_ptr<vis::StandaloneWindow> window;
 	osg::ref_ptr<vis::RenderCameraViewport> viewport;
 
 	std::map<int, sim::EntityPtr> aircraftMap;
@@ -1456,8 +1652,10 @@ private:
 	CameraInputAxes cameraAxes;
 	std::vector<LogicalAxisPtr> logicalAxes;
 	std::shared_ptr<CameraInputSystem> cameraInputSystem;
+	std::shared_ptr<Joysticks> joysticks; //!< of the manual aircraft, null without manual control or without joystick mapping
 
 	osg::ref_ptr<HelpDisplayRenderOperation> helpDisplay;
+	osg::ref_ptr<WindowNotice> notice; //!< null without a window
 	std::shared_ptr<HelpDisplayToggleEventListener> helpToggleListener;
 	std::shared_ptr<KeyPressListener> keyListener;
 
@@ -1475,6 +1673,9 @@ private:
 	bool labelsVisible = true;
 	std::shared_ptr<AircraftTrails> trails; //!< null without a window
 	std::shared_ptr<CannonTracers> tracers; //!< null without a window
+	std::shared_ptr<NozzleGlow> nozzleGlow; //!< null without a window
+	std::map<int, std::vector<NozzleGlow::Nozzle>> aircraftNozzles; //!< of the entity templates, by aircraft ID
+	std::map<int, double> aircraftThrottles; //!< of set_aircraft_throttle(), by aircraft ID
 
 	std::unique_ptr<VideoRecorder> recorder; //!< null without a window
 	std::filesystem::path recordingDirectory = "recordings";
@@ -1752,7 +1953,7 @@ PYBIND11_MODULE(skybolt, m) {
 	m.def("scaleAndSaveModel", &scaleAndSaveModel, py::arg("inpath"), py::arg("scale"));
 
 	//! Version of the FlightSim Python API, raised when it changes, so that Python code can check that the build is up to date
-	m.attr("FLIGHTSIM_API_VERSION") = 4;
+	m.attr("FLIGHTSIM_API_VERSION") = 8;
 
 	py::class_<FlightSim>(m, "FlightSim", "Shows aircraft over the earth and simulates them, see add_aircraft()")
 	.def(py::init<int,int,int,int,const std::map<int, std::string>&,bool,bool,double,bool>(),
@@ -1783,6 +1984,7 @@ PYBIND11_MODULE(skybolt, m) {
 	.def("select_camera_view", &FlightSim::select_camera_view, py::arg("view"))
 	.def("set_aircraft_label", &FlightSim::set_aircraft_label, py::arg("id"), py::arg("label"))
 	.def("set_aircraft_color", &FlightSim::set_aircraft_color, py::arg("id"), py::arg("color"))
+	.def("set_aircraft_throttle", &FlightSim::set_aircraft_throttle, py::arg("id"), py::arg("throttle"))
 	.def_property("labels_visible", &FlightSim::get_labels_visible, &FlightSim::set_labels_visible)
 	.def_property("trails_visible", &FlightSim::get_trails_visible, &FlightSim::set_trails_visible)
 	.def_property("trail_length", &FlightSim::get_trail_length, &FlightSim::set_trail_length)
@@ -1790,6 +1992,7 @@ PYBIND11_MODULE(skybolt, m) {
 	.def("set_manual_aircraft", &FlightSim::set_manual_aircraft, py::arg("id"))
 	.def("get_manual_controls", &FlightSim::get_manual_controls)
 	.def("consume_fire_requests", &FlightSim::consume_fire_requests)
+	.def_property_readonly("fire_pressed", &FlightSim::is_fire_pressed)
 	.def("fire_tracer", &FlightSim::fire_tracer, py::arg("entityId"), py::arg("speed") = 1000.0, py::arg("lifetime") = 1.0)
 	.def("fire_rocket", &FlightSim::fire_tracer, py::arg("entityId"), py::arg("speed") = 1000.0, py::arg("lifetime") = 1.0)
 	.def("clear_tracers", &FlightSim::clear_tracers)
@@ -1799,6 +2002,8 @@ PYBIND11_MODULE(skybolt, m) {
 	.def("run", &FlightSim::run)
 	.def_property_readonly("sim_time", &FlightSim::get_sim_time)
 	.def_property_readonly("dynamics_step_size", &FlightSim::get_dynamics_step_size)
+	.def_property("vsync", &FlightSim::get_vsync, &FlightSim::set_vsync)
+	.def_property("fullscreen", &FlightSim::get_fullscreen, &FlightSim::set_fullscreen)
 	.def("start_recording", &FlightSim::start_recording, py::arg("path") = py::none())
 	.def("stop_recording", &FlightSim::stop_recording)
 	.def_property_readonly("recording", &FlightSim::is_recording)

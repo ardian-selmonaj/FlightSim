@@ -255,15 +255,24 @@ static sim::ComponentPtr loadJsbSimAircraftComponent(Entity* entity, const Compo
 	std::string jsbSimRoot = readOptionalOrDefault(json, "jsbSimRootDir", defaultJsbSimRootDir);
 	std::string model = json.at("model");
 
+	// The model is in the aircraft folder of the JSBSim root directory, or in the folder 'aircraftDir' of the asset packages,
+	// e.g. a modified model (Assets/Movers/JSBSimManual). The engines and systems come from the JSBSim root directory.
+	std::string aircraftPath = jsbSimRoot + "/aircraft";
+	if (std::optional<std::string> aircraftDir = readOptional<std::string>(json, "aircraftDir"); aircraftDir)
+	{
+		file::Path modelFile = valueOrThrowException(context.fileLocator(*aircraftDir + "/" + model + "/" + model + ".xml"));
+		aircraftPath = modelFile.parent_path().parent_path().string();
+	}
+
 	auto exec = std::make_unique<JSBSim::FGFDMExec>();
 	exec->SetDebugLevel(0); // disable JSBSim debug output
 	exec->SetRootDir(SGPath(jsbSimRoot));
-	exec->SetAircraftPath(SGPath(jsbSimRoot + "/aircraft"));
+	exec->SetAircraftPath(SGPath(aircraftPath));
 	exec->SetEnginePath(SGPath(jsbSimRoot + "/engine"));
 	exec->SetSystemsPath(SGPath(jsbSimRoot + "/systems"));
 	if (!exec->LoadModel(model))
 	{
-		throw std::runtime_error("JSBSim could not load aircraft model '" + model + "' from '" + jsbSimRoot + "/aircraft'. Check 'jsb.rootDir' in the Skybolt settings.");
+		throw std::runtime_error("JSBSim could not load aircraft model '" + model + "' from '" + aircraftPath + "'. Check 'jsb.rootDir' in the Skybolt settings.");
 	}
 
 	assert(entity);

@@ -11,10 +11,13 @@ include_directories(${Python3_INCLUDE_DIRS})
 find_package(pybind11 REQUIRED)
 include_directories(${pybind11_INCLUDE_DIRS})
 
+find_package(SDL2 REQUIRED) # joysticks of the manual aircraft, see FlightSimJoysticks.h
+
 set(LIBS
 	SkyboltEngine
 	ExamplesCommon
 	pybind11::headers
+	SDL2::SDL2
 )
 
 if (WIN32)
@@ -29,6 +32,11 @@ endif()
 include(pybind11Tools)
 pybind11_add_module(${TARGET_NAME} ${SrcFiles} ${MODULE_TYPE})
 target_link_libraries (${TARGET_NAME} PUBLIC ${LIBS})
+
+if (NOT WIN32)
+	# The static SDL is not exported, so it cannot be mixed up with another SDL of the process, e.g. the one of pygame
+	target_link_options(${TARGET_NAME} PRIVATE "LINKER:--exclude-libs,libSDL2.a")
+endif()
 
 set_target_properties(${TARGET_NAME} PROPERTIES FOLDER PythonLibs)
 

@@ -1,4 +1,8 @@
 {
+	"nozzles": [
+		{"positionRelBody": [-46.28, -6.24, 3.9], "radius": 3.9},
+		{"positionRelBody": [-46.28, 6.24, 3.9], "radius": 3.9}
+	],
 	"components": [
 		{"node": {
 		}},

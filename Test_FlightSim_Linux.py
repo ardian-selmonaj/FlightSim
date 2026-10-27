@@ -20,9 +20,11 @@ def rpy(roll_deg, pitch_deg, yaw_deg):
 
 app = sb.FlightSim(10, 30, 1080, 720, manual=True, multiwindow=False)
 
-# Aircraft 1 is simulated by JSBSim (template with a jsbSimAircraft component) and flown with the keyboard.
+# Aircraft 1 is simulated by JSBSim (template with a jsbSimAircraft component, here the F-16 with the corrected rudder of
+# Assets/Movers/JSBSimManual) and flown with the joysticks of Tools/joysticks.json while they are connected, otherwise with
+# the keyboard.
 # Its initial conditions are the position, orientation and velocity (north, east, down in m/s) given here.
-app.add_aircraft(1, "SepecatJaguarJsbBlue", position=lla(LAT, LON, 3300), rpy=rpy(0, 0, 0), velocityNed=sb.Vector3(150, 0, 0))
+app.add_aircraft(1, "SepecatJaguarJsbBlueManual", position=lla(LAT, LON, 3300), rpy=rpy(0, 0, 0), velocityNed=sb.Vector3(150, 0, 0))
 app.set_manual_aircraft(1)
 
 # Aircraft 2 has no flight dynamics and is moved from Python
@@ -40,8 +42,8 @@ i = 0
 while True:
     app.set_aircraft_state(2, position=lla(LAT, LON, 3050 + i), rpy=rpy(0, 0, 90))
 
-    # Space fires the cannon (shown as tracers)
-    if app.consume_fire_requests():
+    # The fire button of the joystick, or without it space, fires the cannon (shown as tracers), also while it is held
+    if app.consume_fire_requests() or (app.fire_pressed and i % 5 == 0):
         app.fire_tracer(1)
 
     if not app.frame(dt):
