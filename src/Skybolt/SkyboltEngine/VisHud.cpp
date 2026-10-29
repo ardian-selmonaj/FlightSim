@@ -198,11 +198,21 @@ void VisHud::traverse(osg::NodeVisitor& visitor)
 			mPrimitivesGeode->addDrawable(geom);
 		}
 
-		// Triangles
+		// Quads
 		{
 			osg::Geometry* geom = new osg::Geometry;
 			geom->setVertexArray(mQuadVertices);
 			geom->addPrimitiveSet(new osg::DrawArrays(GL_QUADS, 0, mQuadVertices->size()));
+			vis::configureDrawable(*geom);
+			geom->setCullingActive(false);
+			mPrimitivesGeode->addDrawable(geom);
+		}
+
+		// Triangles
+		{
+			osg::Geometry* geom = new osg::Geometry;
+			geom->setVertexArray(mTriangleVertices);
+			geom->addPrimitiveSet(new osg::DrawArrays(GL_TRIANGLES, 0, mTriangleVertices->size()));
 			vis::configureDrawable(*geom);
 			geom->setCullingActive(false);
 			mPrimitivesGeode->addDrawable(geom);
@@ -215,6 +225,7 @@ void VisHud::clear()
 {
 	mLineVertices = new osg::Vec3Array;
 	mQuadVertices = new osg::Vec3Array;
+	mTriangleVertices = new osg::Vec3Array;
 	mTextPool->checkinAll();
 	mTextGeode->removeDrawables(0, mTextGeode->getNumDrawables());
 
@@ -300,6 +311,15 @@ void VisHud::drawSolidBox(const glm::vec2 &position, float width, float height)
 	mQuadVertices->push_back(toVec3(position + glm::vec2(halfWidth, -halfHeight)));
 	mQuadVertices->push_back(toVec3(position + glm::vec2(halfWidth, halfHeight)));
 	mQuadVertices->push_back(toVec3(position + glm::vec2(-halfWidth, halfHeight)));
+
+	setDirty();
+}
+
+void VisHud::drawSolidTriangle(const glm::vec2 &p0, const glm::vec2 &p1, const glm::vec2 &p2)
+{
+	mTriangleVertices->push_back(toVec3(p0));
+	mTriangleVertices->push_back(toVec3(p1));
+	mTriangleVertices->push_back(toVec3(p2));
 
 	setDirty();
 }

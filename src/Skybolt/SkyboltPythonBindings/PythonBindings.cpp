@@ -281,6 +281,8 @@ F4: Free view
 Tab: Next aircraft
 L: Toggle labels
 T: Toggle trails
+M: Toggle minimap
+N: Minimap north-up/heading-up
 R: Start/stop recording
 )";
 	message += std::string("V: Toggle vsync (now ") + (vsync ? "on" : "off") + ")\nB: Toggle full screen\n";
@@ -295,8 +297,8 @@ Mouse, A/D: Rotate around the aircraft
 W/S, mouse wheel: Zoom
 
 In Free view (F4):
-Shift (hold) + Mouse: Camera tilt modifier
-W/S: Move forward/back
+W/S, A/D: Move forward/back, left/right
+Shift/Ctrl (hold): Move 10x faster/slower
 )";
 	}
 
@@ -681,6 +683,10 @@ public:
 			simVisSystem->addBinding(trails);
 			simVisSystem->addBinding(tracers);
 			simVisSystem->addBinding(nozzleGlow);
+
+			// Heading-up for the human pilot, north-up for observers
+			minimap = std::make_unique<TacticalMinimap>(overlayCamera);
+			minimap->setHeadingUp(manual);
 		}
 
 		// second Window
@@ -839,6 +845,7 @@ public:
 		if (trails)
 		{
 			trails->clear(id);
+			minimap->clearPath(id);
 		}
 
 		if (id == manualAircraftId)
@@ -866,6 +873,7 @@ public:
 		if (trails)
 		{
 			trails->clear(id);
+			minimap->clearPath(id);
 		}
 
 		if (id == manualAircraftId)
@@ -1020,11 +1028,48 @@ public:
 		}
 	}
 
+	//! Clears the trails and the flown paths on the minimap, e.g. after the aircraft were moved to new states
 	void clear_trails()
 	{
 		if (trails)
 		{
 			trails->clearAll();
+			minimap->clearPaths();
+		}
+	}
+
+	//! Minimap of the visible aircraft around the camera target in the bottom right corner of the window (key M), see TacticalMinimap
+	bool get_minimap_visible() const { return minimap && minimap->isVisible(); }
+	void set_minimap_visible(bool visible)
+	{
+		if (minimap)
+		{
+			minimap->setVisible(visible);
+		}
+	}
+
+	//! @returns the distance in m from the center of the minimap to its outer ring. Aircraft farther away are shown at the ring.
+	double get_minimap_range() const { return minimap ? minimap->getRange() : 0.0; }
+	void set_minimap_range(double range)
+	{
+		if (!(range > 0))
+		{
+			throw std::invalid_argument("FlightSim: minimap_range must be positive");
+		}
+		if (minimap)
+		{
+			minimap->setRange(range);
+		}
+	}
+
+	//! True if the heading of the camera target points up on the minimap (key N), false if north points up.
+	//! By default heading-up with manual control, otherwise north-up.
+	bool get_minimap_heading_up() const { return minimap && minimap->isHeadingUp(); }
+	void set_minimap_heading_up(bool headingUp)
+	{
+		if (minimap)
+		{
+			minimap->setHeadingUp(headingUp);
 		}
 	}
 
@@ -1125,6 +1170,7 @@ public:
 	bool render()
 	{
 		updateLabels();
+		updateMinimap();
 		if (recorder)
 		{
 			recorder->beforeRender(stepper->getTime());
@@ -1186,8 +1232,8 @@ public:
 	}
 
 	//! Starts recording the view of the window into an MP4 video file, until stop_recording(), the window is closed or the FlightSim
-	//! is deleted. Key R starts and stops recording as well. The video shows the view as in the window, with the labels, trails and
-	//! the cockpit HUD, but without the help message and the red dot shown while recording. It has recording_fps frames per second
+	//! is deleted. Key R starts and stops recording as well. The video shows the view as in the window, with the labels, trails, minimap
+	//! and the cockpit HUD, but without the help message and the red dot shown while recording. It has recording_fps frames per second
 	//! of simulation time, each taken from the simulation step closest to its time, so that it plays at the speed of the simulation.
 	//! @param path of the video file, or none for a new file named after the current date and time in recording_directory
 	//! @returns the path of the video file
@@ -1377,6 +1423,19 @@ private:
 				break;
 			case KC_T:
 				set_trails_visible(!get_trails_visible());
+				break;
+			case KC_M:
+				if (!repeat)
+				{
+					set_minimap_visible(!get_minimap_visible());
+				}
+				break;
+			case KC_N:
+				if (!repeat)
+				{
+					set_minimap_heading_up(!get_minimap_heading_up());
+					notice->show(get_minimap_heading_up() ? "Minimap heading-up" : "Minimap north-up");
+				}
 				break;
 			case KC_R:
 				if (!repeat) // holding the key down does not start and stop recording repeatedly
@@ -1582,6 +1641,13 @@ private:
 		return 2.0 * std::tan(fovY * 0.5) / double(std::max(1, window ? window->getHeight() : 1));
 	}
 
+	//! @returns width / height of the overlay with the labels and the minimap
+	double getOverlayAspectRatio() const
+	{
+		const osg::Viewport* viewport = overlayCamera->getViewport();
+		return (viewport && viewport->height() > 0) ? viewport->width() / viewport->height() : getAspectRatio();
+	}
+
 	//! Draws the labels of the visible aircraft above them
 	void updateLabels()
 	{
@@ -1590,8 +1656,7 @@ private:
 			return;
 		}
 
-		const osg::Viewport* viewport = overlayCamera->getViewport();
-		double aspectRatio = (viewport && viewport->height() > 0) ? viewport->width() / viewport->height() : getAspectRatio();
+		double aspectRatio = getOverlayAspectRatio();
 
 		Frustum frustum;
 		frustum.origin = getPosition(*simCamera).value_or(math::dvec3Zero());
@@ -1624,6 +1689,51 @@ private:
 				}
 			}
 		}
+	}
+
+	//! Draws the minimap of the visible aircraft around the camera target, with their labels and colors, and in the free view the
+	//! camera. The flown paths of the aircraft are extended also while the minimap is hidden.
+	void updateMinimap()
+	{
+		if (!minimap)
+		{
+			return;
+		}
+
+		std::optional<TacticalMinimap::Aircraft> center;
+		std::vector<TacticalMinimap::Aircraft> others;
+		for (const auto& [id, aircraft] : aircraftMap)
+		{
+			std::optional<Vector3> position = getPosition(*aircraft);
+			std::optional<Quaternion> orientation = getOrientation(*aircraft);
+			if (!position || !orientation || !isVisible(id))
+			{
+				continue;
+			}
+			TacticalMinimap::Aircraft item{id, *position, *orientation, osg::Vec4f(1, 1, 1, 1), ""};
+			if (auto display = displays.find(id); display != displays.end())
+			{
+				item.color = display->second.color;
+				item.label = display->second.label;
+			}
+			if (id == cameraTargetId)
+			{
+				center = item;
+			}
+			else
+			{
+				others.push_back(item);
+			}
+		}
+		// In the free view, the minimap shows where the camera is and where it looks
+		std::optional<TacticalMinimap::Camera> camera;
+		if (cameraView == "Free")
+		{
+			CameraPose pose = getCameraPose();
+			double fovY = simCamera->getFirstComponentRequired<CameraComponent>()->getState().fovY;
+			camera = TacticalMinimap::Camera{pose.position, pose.forward, 2.0 * std::atan(std::tan(0.5 * fovY) * getOverlayAspectRatio())};
+		}
+		minimap->update(float(getOverlayAspectRatio()), stepper->getTime(), center, others, camera);
 	}
 
 private:
@@ -1674,6 +1784,7 @@ private:
 	std::shared_ptr<AircraftTrails> trails; //!< null without a window
 	std::shared_ptr<CannonTracers> tracers; //!< null without a window
 	std::shared_ptr<NozzleGlow> nozzleGlow; //!< null without a window
+	std::unique_ptr<TacticalMinimap> minimap; //!< null without a window
 	std::map<int, std::vector<NozzleGlow::Nozzle>> aircraftNozzles; //!< of the entity templates, by aircraft ID
 	std::map<int, double> aircraftThrottles; //!< of set_aircraft_throttle(), by aircraft ID
 
@@ -1953,7 +2064,7 @@ PYBIND11_MODULE(skybolt, m) {
 	m.def("scaleAndSaveModel", &scaleAndSaveModel, py::arg("inpath"), py::arg("scale"));
 
 	//! Version of the FlightSim Python API, raised when it changes, so that Python code can check that the build is up to date
-	m.attr("FLIGHTSIM_API_VERSION") = 8;
+	m.attr("FLIGHTSIM_API_VERSION") = 9;
 
 	py::class_<FlightSim>(m, "FlightSim", "Shows aircraft over the earth and simulates them, see add_aircraft()")
 	.def(py::init<int,int,int,int,const std::map<int, std::string>&,bool,bool,double,bool>(),
@@ -1989,6 +2100,9 @@ PYBIND11_MODULE(skybolt, m) {
 	.def_property("trails_visible", &FlightSim::get_trails_visible, &FlightSim::set_trails_visible)
 	.def_property("trail_length", &FlightSim::get_trail_length, &FlightSim::set_trail_length)
 	.def("clear_trails", &FlightSim::clear_trails)
+	.def_property("minimap_visible", &FlightSim::get_minimap_visible, &FlightSim::set_minimap_visible)
+	.def_property("minimap_range", &FlightSim::get_minimap_range, &FlightSim::set_minimap_range)
+	.def_property("minimap_heading_up", &FlightSim::get_minimap_heading_up, &FlightSim::set_minimap_heading_up)
 	.def("set_manual_aircraft", &FlightSim::set_manual_aircraft, py::arg("id"))
 	.def("get_manual_controls", &FlightSim::get_manual_controls)
 	.def("consume_fire_requests", &FlightSim::consume_fire_requests)

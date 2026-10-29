@@ -20,14 +20,17 @@
 #include <SkyboltVis/Scene.h>
 #include <SkyboltVis/RenderOperation/RenderOperation.h>
 
+#include <osg/BlendFunc>
 #include <osg/Geode>
 #include <osg/Geometry>
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <deque>
 #include <functional>
+#include <limits>
 #include <map>
 #include <optional>
 #include <string>
@@ -741,6 +744,637 @@ private:
 	osg::ref_ptr<osg::Vec3Array> mVertices;
 	osg::ref_ptr<osg::Vec4Array> mColors;
 	osg::ref_ptr<osg::DrawElementsUInt> mTriangles;
+};
+
+//! Map of the aircraft around a center aircraft, e.g. the camera target, in the bottom right corner of the window. Each aircraft is an
+//! arrow in its color pointing in its heading, with its label and its distance (in 3D) to the center aircraft, and with its flown path
+//! of the last msPathDuration seconds as dots. Aircraft beyond the range are shown by a triangle at the edge in their direction, with
+//! their label and distance. The map is north-up or heading-up (the heading of the center aircraft points up), with a ring at the
+//! range, a dashed ring at half of it and ticks every 30 degrees, marked N at north. The range is shown in the bottom left corner, the
+//! label of the center aircraft in the bottom right corner. The texts of the aircraft in range are beside their
+//! arrows, on the side where they cover the least of the other symbols and texts. A camera, e.g. the free camera, can be shown as a
+//! light gray camera with dashed lines along its field of view, so that it is easier to turn it towards the aircraft.
+//! It is drawn over the view like the labels, so videos show it.
+class TacticalMinimap
+{
+public:
+	struct Aircraft
+	{
+		int id; //!< keeps the place of the text of the aircraft from frame to frame
+		sim::Vector3 position; //!< geocentric
+		sim::Quaternion orientation; //!< geocentric
+		osg::Vec4f color; //!< linear color as displayed, like the colors of VisHud
+		std::string label; //!< may be empty
+	};
+
+	//! Camera shown on the map, e.g. the free camera
+	struct Camera
+	{
+		sim::Vector3 position; //!< geocentric
+		sim::Vector3 forward; //!< geocentric unit vector in the viewing direction
+		double fieldOfView; //!< horizontal, in rad
+	};
+
+	//! @param parentCamera draws the map over the view, e.g. the camera of the final render target
+	explicit TacticalMinimap(const osg::ref_ptr<osg::Camera>& parentCamera) :
+		mParentCamera(parentCamera),
+		mRoot(new osg::Group),
+		mBackground(new VisHud),
+		mGrid(new VisHud),
+		mAircraftGroup(new osg::Group),
+		mCenterHud(new VisHud),
+		mCameraHud(new VisHud)
+	{
+		// The background is transparent
+		mRoot->getOrCreateStateSet()->setAttributeAndModes(new osg::BlendFunc(osg::BlendFunc::SRC_ALPHA, osg::BlendFunc::ONE_MINUS_SRC_ALPHA));
+
+		// The HUDs are drawn in this order, the center aircraft on top of the others and the camera on top of all
+		mBackground->setColor(msBackgroundColor);
+		mGrid->setColor(msGridColor);
+		mCameraHud->setColor(msCameraColor);
+		mRoot->addChild(mBackground);
+		mRoot->addChild(mGrid);
+		mRoot->addChild(mAircraftGroup);
+		mRoot->addChild(mCenterHud);
+		mRoot->addChild(mCameraHud);
+		mParentCamera->addChild(mRoot);
+	}
+
+	~TacticalMinimap()
+	{
+		mParentCamera->removeChild(mRoot);
+	}
+
+	void setVisible(bool visible) { mRoot->setNodeMask(visible ? ~0u : 0u); }
+	bool isVisible() const { return mRoot->getNodeMask() != 0; }
+
+	//! @param range distance in m from the center of the map to the ring at its edge
+	void setRange(double range) { mRange = range; }
+	double getRange() const { return mRange; }
+
+	//! @param headingUp true: the heading of the center aircraft points up, false: north points up
+	void setHeadingUp(bool headingUp) { mHeadingUp = headingUp; }
+	bool isHeadingUp() const { return mHeadingUp; }
+
+	//! Extends the flown paths of the aircraft and draws the map if it is visible
+	//! @param aspectRatio width / height of the view
+	//! @param time simulation time in s
+	//! @param center aircraft in the center of the map, none to draw no map
+	//! @param others the other aircraft
+	//! @param camera shown as a camera with dashed lines along its field of view, if any
+	void update(float aspectRatio, double time, const std::optional<Aircraft>& center, const std::vector<Aircraft>& others,
+		const std::optional<Camera>& camera)
+	{
+		updatePaths(time, center, others);
+		if (!isVisible())
+		{
+			return;
+		}
+		mAspectRatio = aspectRatio;
+		for (VisHud* hud : {mBackground.get(), mGrid.get(), mCenterHud.get(), mCameraHud.get()})
+		{
+			hud->clear();
+			hud->setAspectRatio(aspectRatio);
+		}
+		for (ColorHud& colorHud : mAircraftHuds)
+		{
+			colorHud.hud->clear();
+			colorHud.hud->setAspectRatio(aspectRatio);
+			colorHud.used = false;
+		}
+
+		if (center)
+		{
+			drawMap(*center, others, camera);
+		}
+
+		// Remove the HUDs of colors that are no longer drawn
+		for (auto it = mAircraftHuds.begin(); it != mAircraftHuds.end();)
+		{
+			if (it->used)
+			{
+				++it;
+			}
+			else
+			{
+				mAircraftGroup->removeChild(it->hud);
+				it = mAircraftHuds.erase(it);
+			}
+		}
+	}
+
+	//! Removes the flown paths, e.g. after the aircraft were moved to new states
+	void clearPaths() { mPaths.clear(); }
+	void clearPath(int id) { mPaths.erase(id); }
+
+private:
+	//! Positions of an aircraft in the last msPathDuration seconds, oldest first
+	struct PathPoint
+	{
+		double time; //!< s
+		sim::Vector3 position; //!< geocentric
+	};
+	using Path = std::deque<PathPoint>;
+
+	//! Extends the paths of the visible aircraft, those of the others are removed
+	void updatePaths(double time, const std::optional<Aircraft>& center, const std::vector<Aircraft>& others)
+	{
+		std::map<int, Path> paths;
+		auto extend = [&] (const Aircraft& aircraft) {
+			Path& path = paths[aircraft.id];
+			if (auto it = mPaths.find(aircraft.id); it != mPaths.end())
+			{
+				path = std::move(it->second);
+			}
+
+			// A new path after a jump, e.g. when the aircraft was moved to a new state, or if the time went back
+			if (!path.empty())
+			{
+				const PathPoint& last = path.back();
+				if (time < last.time || glm::length(aircraft.position - last.position) > msMaxPathSpeed * std::max(time - last.time, msPathSampleInterval))
+				{
+					path.clear();
+				}
+			}
+			if (path.empty() || time - path.back().time >= msPathSampleInterval)
+			{
+				path.push_back({time, aircraft.position});
+			}
+			while (time - path.front().time > msPathDuration)
+			{
+				path.pop_front();
+			}
+		};
+		if (center)
+		{
+			extend(*center);
+		}
+		for (const Aircraft& aircraft : others)
+		{
+			extend(aircraft);
+		}
+		mPaths = std::move(paths);
+	}
+
+	//! Draws dots at regular distances along a line on the map, starting at msPathDotStart from its first point, inside the ring
+	void drawPathDots(VisHud& hud, const std::vector<glm::vec2>& line, const glm::vec2& mapCenter)
+	{
+		float next = msPathDotStart; // distance along the line of the next dot
+		float travelled = 0.0f;
+		for (size_t i = 1; i < line.size(); ++i)
+		{
+			glm::vec2 segment = line[i] - line[i - 1];
+			float length = glm::length(segment);
+			while (next <= travelled + length)
+			{
+				glm::vec2 dot = line[i - 1] + segment * ((next - travelled) / length);
+				if (glm::length(dot - mapCenter) <= msRadius)
+				{
+					hud.drawSolidBox(dot, msPathDotSize, msPathDotSize);
+				}
+				next += msPathDotSpacing;
+			}
+			travelled += length;
+		}
+	}
+
+	//! Rectangle on the map
+	struct Box
+	{
+		glm::vec2 min;
+		glm::vec2 max;
+	};
+
+	//! Side of an arrow where its text is drawn
+	enum class Side
+	{
+		Right,
+		Left,
+		Below,
+		Above
+	};
+
+	//! Text of an aircraft in range, drawn beside its arrow
+	struct ArrowText
+	{
+		int id; //!< of the aircraft
+		VisHud* hud;
+		glm::vec2 arrowPosition;
+		std::string label;
+		std::string distance; //!< to the center aircraft
+	};
+
+	void drawMap(const Aircraft& center, const std::vector<Aircraft>& others, const std::optional<Camera>& camera)
+	{
+		// The map shows north and east at the center aircraft. Headings and bearings are clockwise from north, directions on the map
+		// clockwise from up.
+		const sim::Matrix3 nedFromWorld = glm::transpose(sim::geocentricToLtpOrientation(center.position));
+		auto heading = [&] (const Aircraft& aircraft) {
+			sim::Vector3 forward = nedFromWorld * (aircraft.orientation * sim::Vector3(1, 0, 0));
+			return std::atan2(forward.y, forward.x);
+		};
+		const double up = mHeadingUp ? heading(center) : 0.0; // heading pointing up on the map
+		const glm::vec2 mapCenter(mAspectRatio - msMargin - msPanelHalfSize, -1.0f + msMargin + msPanelHalfSize);
+
+		// Areas that the texts of the aircraft in range should not cover
+		std::vector<Box> occupied;
+		drawGrid(mapCenter, up, occupied);
+
+		mCenterHud->setColor(center.color);
+		drawArrow(*mCenterHud, mapCenter, heading(center) - up, msCenterSymbolSize);
+		occupied.push_back(calcArrowBox(mapCenter, msCenterSymbolSize));
+		if (!center.label.empty())
+		{
+			glm::vec2 position = mapCenter + glm::vec2(msPanelHalfSize - msCornerInset, -msPanelHalfSize + msCornerInset + msTextCenterHeight);
+			drawTextBlock(getAircraftHud(toTextColor(center.color)), position, "", center.label, HudDrawer::Alignment::Right);
+			occupied.push_back(calcTextBlockBox(position, "", center.label, HudDrawer::Alignment::Right));
+		}
+
+		// Position on the map, beyond the ring for positions beyond the range
+		auto toMap = [&] (const sim::Vector3& position) {
+			sim::Vector3 offset = nedFromWorld * (position - center.position);
+			double distance = std::hypot(offset.x, offset.y);
+			return mapCenter + toMapDirection(std::atan2(offset.y, offset.x) - up) * float(msRadius * distance / mRange);
+		};
+
+		std::vector<ArrowText> arrowTexts;
+		for (const Aircraft& aircraft : others)
+		{
+			sim::Vector3 offset = nedFromWorld * (aircraft.position - center.position);
+			double distance = std::hypot(offset.x, offset.y); // on the map
+			std::string distanceText = formatDistance(glm::length(offset)); // in 3D
+			glm::vec2 direction = toMapDirection(std::atan2(offset.y, offset.x) - up);
+			VisHud& hud = getAircraftHud(aircraft.color);
+			VisHud& textHud = getAircraftHud(toTextColor(aircraft.color));
+
+			// Flown path as dots behind the aircraft (the HUD draws them below the arrows)
+			if (auto path = mPaths.find(aircraft.id); path != mPaths.end())
+			{
+				std::vector<glm::vec2> line = {toMap(aircraft.position)};
+				for (auto point = path->second.rbegin(); point != path->second.rend(); ++point)
+				{
+					line.push_back(toMap(point->position));
+				}
+				drawPathDots(hud, line, mapCenter);
+			}
+
+			if (distance <= mRange)
+			{
+				glm::vec2 position = toMap(aircraft.position);
+				drawArrow(hud, position, heading(aircraft) - up, msSymbolSize);
+				occupied.push_back(calcArrowBox(position, msSymbolSize));
+				arrowTexts.push_back({aircraft.id, &textHud, position, aircraft.label, distanceText});
+			}
+			else
+			{
+				// Triangle on the ring pointing outwards, with the label and the distance inside the ring
+				glm::vec2 right(direction.y, -direction.x);
+				glm::vec2 tip = mapCenter + direction * msRadius;
+				glm::vec2 base = tip - direction * msEdgeMarkerLength;
+				hud.drawSolidTriangle(tip, base - right * msEdgeMarkerHalfWidth, base + right * msEdgeMarkerHalfWidth);
+				occupied.push_back(calcArrowBox(0.5f * (tip + base), msEdgeMarkerLength));
+
+				HudDrawer::Alignment alignment = (direction.x > 0.35f) ? HudDrawer::Alignment::Right
+					: (direction.x < -0.35f) ? HudDrawer::Alignment::Left : HudDrawer::Alignment::Center;
+				glm::vec2 textPosition = mapCenter + direction * (msRadius - msEdgeTextInset);
+				drawTextBlock(textHud, textPosition, aircraft.label, distanceText, alignment);
+				occupied.push_back(calcTextBlockBox(textPosition, aircraft.label, distanceText, alignment));
+			}
+		}
+
+		if (camera)
+		{
+			sim::Vector3 forward = nedFromWorld * camera->forward;
+			double direction = std::atan2(forward.y, forward.x) - up;
+			glm::vec2 position = toMap(camera->position);
+
+			// Field of view as dashed lines from the camera to the ring
+			for (double side : {-0.5, 0.5})
+			{
+				glm::vec2 end = position + toMapDirection(direction + side * camera->fieldOfView) * (glm::length(position - mapCenter) + 2.0f * msRadius);
+				if (auto segment = clipToRing(position, end, mapCenter); segment)
+				{
+					mCameraHud->drawLineDashed(segment->first, segment->second, {msFieldOfViewDashLength, msFieldOfViewGapLength});
+				}
+			}
+
+			// At the ring if the camera is beyond the range
+			glm::vec2 offset = position - mapCenter;
+			if (glm::length(offset) > msRadius)
+			{
+				position = mapCenter + offset * (msRadius / glm::length(offset));
+			}
+			drawCamera(*mCameraHud, position, direction, msCameraSymbolSize);
+			occupied.push_back(calcArrowBox(position, msCameraSymbolSize));
+		}
+
+		// Label and distance beside each arrow, one after the other on the side where they cover the least of the occupied
+		// areas and of the outside of the map. The previous side is kept while it is as good as the others, so the texts do not
+		// jump between the sides. Otherwise the texts are preferably away from the center aircraft.
+		const Box panel{mapCenter - glm::vec2(msPanelHalfSize), mapCenter + glm::vec2(msPanelHalfSize)};
+		std::map<int, Side> sides;
+		for (const ArrowText& text : arrowTexts)
+		{
+			bool left = text.arrowPosition.x < mapCenter.x;
+			std::vector<Side> candidates = {left ? Side::Left : Side::Right, left ? Side::Right : Side::Left, Side::Below, Side::Above};
+			if (auto previous = mArrowTextSides.find(text.id); previous != mArrowTextSides.end())
+			{
+				candidates.insert(candidates.begin(), previous->second);
+			}
+
+			Side bestSide = candidates.front();
+			float bestCoverage = std::numeric_limits<float>::max();
+			for (Side side : candidates)
+			{
+				auto [position, alignment] = calcArrowTextPlacement(text, side);
+				Box box = calcTextBlockBox(position, text.label, text.distance, alignment);
+				float coverage = calcArea(box) - calcOverlapArea(box, panel);
+				for (const Box& other : occupied)
+				{
+					coverage += calcOverlapArea(box, other);
+				}
+				if (coverage < bestCoverage)
+				{
+					bestCoverage = coverage;
+					bestSide = side;
+				}
+			}
+
+			auto [position, alignment] = calcArrowTextPlacement(text, bestSide);
+			drawTextBlock(*text.hud, position, text.label, text.distance, alignment);
+			occupied.push_back(calcTextBlockBox(position, text.label, text.distance, alignment));
+			sides[text.id] = bestSide;
+		}
+		mArrowTextSides = std::move(sides);
+	}
+
+	//! Draws the background, the rings, the ticks, N and the range, and adds the areas of the texts to occupied
+	void drawGrid(const glm::vec2& mapCenter, double up, std::vector<Box>& occupied)
+	{
+		mBackground->drawSolidBox(mapCenter, 2.0f * msPanelHalfSize, 2.0f * msPanelHalfSize);
+
+		mGrid->drawCircle(mapCenter, msRadius, 96);
+		const int dashSegments = 48; // every other segment is drawn
+		for (int i = 0; i < dashSegments; i += 2)
+		{
+			double angle = 2.0 * math::piD() * double(i) / double(dashSegments);
+			double nextAngle = 2.0 * math::piD() * double(i + 1) / double(dashSegments);
+			mGrid->drawLine(mapCenter + toMapDirection(angle) * (0.5f * msRadius), mapCenter + toMapDirection(nextAngle) * (0.5f * msRadius));
+		}
+
+		// Ticks every 30 degrees, the one at north longer and marked N
+		for (int i = 0; i < 12; ++i)
+		{
+			glm::vec2 direction = toMapDirection(double(i) * math::piD() / 6.0 - up);
+			float length = (i == 0) ? 2.0f * msTickLength : msTickLength;
+			mGrid->drawLine(mapCenter + direction * msRadius, mapCenter + direction * (msRadius - length));
+		}
+		glm::vec2 north = mapCenter + toMapDirection(-up) * (msRadius - 2.0f * msTickLength - 0.6f * msTextSize);
+		drawTextBlock(*mGrid, north, "", "N", HudDrawer::Alignment::Center);
+		occupied.push_back(calcTextBlockBox(north, "", "N", HudDrawer::Alignment::Center));
+
+		glm::vec2 rangePosition = mapCenter + glm::vec2(-msPanelHalfSize + msCornerInset, -msPanelHalfSize + msCornerInset + msTextCenterHeight);
+		std::string range = formatRange(mRange);
+		drawTextBlock(*mGrid, rangePosition, "", range, HudDrawer::Alignment::Left);
+		occupied.push_back(calcTextBlockBox(rangePosition, "", range, HudDrawer::Alignment::Left));
+	}
+
+	//! Draws the label above the value, beside the position as given by the alignment, centered vertically on the position.
+	//! Without a label, the value is centered vertically on the position.
+	static void drawTextBlock(VisHud& hud, const glm::vec2& position, const std::string& label, const std::string& value, HudDrawer::Alignment alignment)
+	{
+		if (label.empty())
+		{
+			hud.drawText(position - glm::vec2(0.0f, msTextCenterHeight), value, 0.0f, msTextSize, alignment);
+			return;
+		}
+		hud.drawText(position + glm::vec2(0.0f, 0.1f * msTextSize), label, 0.0f, msTextSize, alignment);
+		hud.drawText(position - glm::vec2(0.0f, 1.05f * msTextSize), value, 0.0f, msTextSize, alignment);
+	}
+
+	//! @returns the height of a text block of drawTextBlock() above its position, to the top of the capitals of the upper line
+	static float calcTextBlockHeight(const std::string& label)
+	{
+		return (label.empty() ? 0.4f : 0.85f) * msTextSize;
+	}
+
+	//! @returns the depth of a text block of drawTextBlock() below its position, to the descenders of the lower line
+	static float calcTextBlockDepth(const std::string& label)
+	{
+		return (label.empty() ? 0.6f : 1.3f) * msTextSize;
+	}
+
+	//! @returns the approximate area of a text block drawn by drawTextBlock()
+	static Box calcTextBlockBox(const glm::vec2& position, const std::string& label, const std::string& value, HudDrawer::Alignment alignment)
+	{
+		float width = estimateTextWidth(label.size() > value.size() ? label : value);
+		float left = (alignment == HudDrawer::Alignment::Left) ? position.x
+			: (alignment == HudDrawer::Alignment::Right) ? position.x - width : position.x - 0.5f * width;
+		return {glm::vec2(left, position.y - calcTextBlockDepth(label)), glm::vec2(left + width, position.y + calcTextBlockHeight(label))};
+	}
+
+	//! @returns the position and alignment of the text block of an aircraft on the side of its arrow
+	static std::pair<glm::vec2, HudDrawer::Alignment> calcArrowTextPlacement(const ArrowText& text, Side side)
+	{
+		const glm::vec2& arrow = text.arrowPosition;
+		switch (side)
+		{
+			case Side::Left:
+				return {arrow - glm::vec2(msTextOffset, 0.0f), HudDrawer::Alignment::Right};
+			case Side::Below:
+				return {arrow - glm::vec2(0.0f, msTextGap + calcTextBlockHeight(text.label)), HudDrawer::Alignment::Center};
+			case Side::Above:
+				return {arrow + glm::vec2(0.0f, msTextGap + calcTextBlockDepth(text.label)), HudDrawer::Alignment::Center};
+			case Side::Right:
+				break;
+		}
+		return {arrow + glm::vec2(msTextOffset, 0.0f), HudDrawer::Alignment::Left};
+	}
+
+	//! @returns the area around an arrow (or an edge marker) of the given length in any direction
+	static Box calcArrowBox(const glm::vec2& position, float size)
+	{
+		return {position - glm::vec2(0.6f * size), position + glm::vec2(0.6f * size)};
+	}
+
+	static float calcArea(const Box& box)
+	{
+		return (box.max.x - box.min.x) * (box.max.y - box.min.y);
+	}
+
+	static float calcOverlapArea(const Box& a, const Box& b)
+	{
+		float width = std::min(a.max.x, b.max.x) - std::max(a.min.x, b.min.x);
+		float height = std::min(a.max.y, b.max.y) - std::max(a.min.y, b.min.y);
+		return (width > 0.0f && height > 0.0f) ? width * height : 0.0f;
+	}
+
+	//! Draws an arrow centered at the position, pointing in the direction (clockwise from up)
+	static void drawArrow(VisHud& hud, const glm::vec2& position, double direction, float size)
+	{
+		glm::vec2 forward = toMapDirection(direction);
+		glm::vec2 right(forward.y, -forward.x);
+		glm::vec2 tip = position + forward * (0.6f * size);
+		glm::vec2 notch = position - forward * (0.15f * size);
+		glm::vec2 back = position - forward * (0.4f * size);
+		hud.drawSolidTriangle(tip, back - right * (0.4f * size), notch);
+		hud.drawSolidTriangle(tip, notch, back + right * (0.4f * size));
+	}
+
+	//! Draws a camera centered at the position, a body with a lens widening to the front, pointing in the direction (clockwise from up)
+	static void drawCamera(VisHud& hud, const glm::vec2& position, double direction, float size)
+	{
+		glm::vec2 forward = toMapDirection(direction);
+		glm::vec2 right(forward.y, -forward.x);
+		auto at = [&] (float ahead, float aside) { return position + forward * (ahead * size) + right * (aside * size); };
+		hud.drawSolidTriangle(at(-0.5f, -0.25f), at(0.05f, -0.25f), at(0.05f, 0.25f));
+		hud.drawSolidTriangle(at(-0.5f, -0.25f), at(0.05f, 0.25f), at(-0.5f, 0.25f));
+		hud.drawSolidTriangle(at(0.05f, -0.1f), at(0.45f, -0.25f), at(0.45f, 0.25f));
+		hud.drawSolidTriangle(at(0.05f, -0.1f), at(0.45f, 0.25f), at(0.05f, 0.1f));
+	}
+
+	//! @returns the part of the line from a to b inside the ring, if any
+	static std::optional<std::pair<glm::vec2, glm::vec2>> clipToRing(const glm::vec2& a, const glm::vec2& b, const glm::vec2& mapCenter)
+	{
+		// Solves |a + t (b - a) - mapCenter| = msRadius for t
+		glm::vec2 u = a - mapCenter;
+		glm::vec2 v = b - a;
+		float vv = glm::dot(v, v);
+		float uv = glm::dot(u, v);
+		float discriminant = uv * uv - vv * (glm::dot(u, u) - msRadius * msRadius);
+		if (vv <= 0.0f || discriminant <= 0.0f)
+		{
+			return std::nullopt;
+		}
+		float t0 = std::max(0.0f, (-uv - std::sqrt(discriminant)) / vv);
+		float t1 = std::min(1.0f, (-uv + std::sqrt(discriminant)) / vv);
+		if (t0 >= t1)
+		{
+			return std::nullopt;
+		}
+		return std::pair(a + v * t0, a + v * t1);
+	}
+
+	//! @returns the unit vector on the map in the direction (clockwise from up)
+	static glm::vec2 toMapDirection(double direction)
+	{
+		return glm::vec2(std::sin(direction), std::cos(direction));
+	}
+
+	//! @returns the approximate width of the text, with the average character width of the default font (Verdana)
+	static float estimateTextWidth(const std::string& text)
+	{
+		return 0.62f * msTextSize * float(text.size());
+	}
+
+	//! @returns the color of the texts of an aircraft: its color mixed with white, so that dark colors are readable on the background
+	static osg::Vec4f toTextColor(const osg::Vec4f& color)
+	{
+		osg::Vec4f result = color;
+		for (int i = 0; i < 3; ++i)
+		{
+			result[i] += (1.0f - result[i]) * msTextWhiteness;
+		}
+		return result;
+	}
+
+	//! @returns e.g. "850 m" (rounded to 10 m), "7.3 km" or "23 km" for a distance in m
+	static std::string formatDistance(double distance)
+	{
+		char text[32];
+		if (distance < 995.0)
+		{
+			std::snprintf(text, sizeof(text), "%.0f m", 10.0 * std::round(distance / 10.0));
+		}
+		else
+		{
+			std::snprintf(text, sizeof(text), (distance < 10000.0) ? "%.1f km" : "%.0f km", distance / 1000.0);
+		}
+		return text;
+	}
+
+	//! @returns e.g. "500 m", "7.5 km" or "20 km" for the range in m
+	static std::string formatRange(double range)
+	{
+		char text[32];
+		if (range < 1000.0)
+		{
+			std::snprintf(text, sizeof(text), "%.0f m", range);
+		}
+		else
+		{
+			double km = range / 1000.0;
+			std::snprintf(text, sizeof(text), (std::abs(km - std::round(km)) < 0.05) ? "%.0f km" : "%.1f km", km);
+		}
+		return text;
+	}
+
+	struct ColorHud
+	{
+		osg::Vec4f color;
+		osg::ref_ptr<VisHud> hud;
+		bool used; //!< drawn in the current frame
+	};
+
+	//! @returns the HUD that draws the other aircraft and the texts of the aircraft in the color, created if there is none
+	VisHud& getAircraftHud(const osg::Vec4f& color)
+	{
+		auto it = std::find_if(mAircraftHuds.begin(), mAircraftHuds.end(), [&] (const ColorHud& colorHud) { return colorHud.color == color; });
+		if (it == mAircraftHuds.end())
+		{
+			osg::ref_ptr<VisHud> hud = new VisHud;
+			hud->setColor(color);
+			hud->setAspectRatio(mAspectRatio);
+			mAircraftGroup->addChild(hud);
+			it = mAircraftHuds.insert(mAircraftHuds.end(), ColorHud{color, hud, false});
+		}
+		it->used = true;
+		return *it->hud;
+	}
+
+private:
+	// Sizes in half heights of the window, like the coordinates of VisHud
+	static constexpr float msRadius = 0.25f; //!< of the ring at the range
+	static constexpr float msPanelHalfSize = 0.28f; //!< half the width and height of the square background
+	static constexpr float msMargin = 0.04f; //!< between the background and the right and bottom edges of the window
+	static constexpr float msSymbolSize = 0.04f; //!< length of the arrows
+	static constexpr float msCenterSymbolSize = 0.048f; //!< length of the arrow of the center aircraft
+	static constexpr float msTextSize = 0.032f;
+	static constexpr float msTextCenterHeight = 0.36f * msTextSize; //!< above the baseline, half the height of the capitals
+	static constexpr float msTextOffset = 0.034f; //!< from the center of an arrow to its text on its left or right
+	static constexpr float msTextGap = 0.03f; //!< from the center of an arrow to its text below or above it
+	static constexpr float msTextWhiteness = 0.45f; //!< of the text colors, see toTextColor()
+	static constexpr float msCameraSymbolSize = 0.045f; //!< length of the camera
+	static constexpr float msFieldOfViewDashLength = 0.01f;
+	static constexpr float msFieldOfViewGapLength = 0.008f;
+	static constexpr float msPathDotSize = 0.007f;
+	static constexpr float msPathDotSpacing = 0.015f; //!< along the path on the map
+	static constexpr float msPathDotStart = 0.025f; //!< from the center of the arrow to the first dot
+	static constexpr double msPathDuration = 30; //!< s of the flown path shown
+	static constexpr double msPathSampleInterval = 0.5; //!< s between the points of the paths
+	static constexpr double msMaxPathSpeed = 1500; //!< m/s, faster movements start a new path
+	static constexpr float msTickLength = 0.012f;
+	static constexpr float msEdgeMarkerLength = 0.028f; //!< of the triangles of the aircraft beyond the range
+	static constexpr float msEdgeMarkerHalfWidth = 0.013f;
+	static constexpr float msEdgeTextInset = 0.065f; //!< from the ring to the text of the aircraft beyond the range
+	static constexpr float msCornerInset = 0.014f; //!< from the corners of the background to the texts there
+	static inline const osg::Vec4f msBackgroundColor = osg::Vec4f(0.0f, 0.0f, 0.0f, 0.7f); //!< blended in linear RGB, so it looks lighter
+	static inline const osg::Vec4f msGridColor = osg::Vec4f(0.8f, 0.8f, 0.8f, 0.85f); //!< light gray as displayed, in linear RGB
+	static inline const osg::Vec4f msCameraColor = osg::Vec4f(0.85f, 0.85f, 0.85f, 1.0f); //!< light gray, opaque unlike the grid
+
+	osg::ref_ptr<osg::Camera> mParentCamera;
+	osg::ref_ptr<osg::Group> mRoot;
+	osg::ref_ptr<VisHud> mBackground;
+	osg::ref_ptr<VisHud> mGrid; //!< rings, ticks and range
+	osg::ref_ptr<osg::Group> mAircraftGroup; //!< HUDs of mAircraftHuds
+	osg::ref_ptr<VisHud> mCenterHud;
+	osg::ref_ptr<VisHud> mCameraHud;
+	std::vector<ColorHud> mAircraftHuds; //!< of the other aircraft, one per color
+	std::map<int, Side> mArrowTextSides; //!< of the texts of the aircraft in range in the last frame, by aircraft ID
+	std::map<int, Path> mPaths; //!< flown paths of the visible aircraft, by aircraft ID
+	float mAspectRatio = 1.0f;
+	double mRange = 20000; //!< m
+	bool mHeadingUp = false;
 };
 
 //! Short message at the top of the window, e.g. the mode that a key switched. As operation with the priority

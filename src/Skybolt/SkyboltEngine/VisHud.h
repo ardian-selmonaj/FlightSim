@@ -29,7 +29,9 @@ public:
 	void drawLineDashed(const glm::vec2 &p0, const glm::vec2 &p1, const DashedLineParams& params) override;
 	void drawText(const glm::vec2 &p, const std::string &message, float rotation = 0.f, float size = -1, Alignment alignment = Alignment::Left) override;
 	void drawSolidBox(const glm::vec2 &position, float width, float height) override;
-	
+
+	void drawSolidTriangle(const glm::vec2 &p0, const glm::vec2 &p1, const glm::vec2 &p2);
+
 private:
 	void traverse(osg::NodeVisitor& visitor) override;
 	void setDirty();
@@ -40,6 +42,7 @@ private:
 	osg::ref_ptr<osg::Geode> mTextGeode;
 	osg::ref_ptr<osg::Vec3Array> mLineVertices;
 	osg::ref_ptr<osg::Vec3Array> mQuadVertices;
+	osg::ref_ptr<osg::Vec3Array> mTriangleVertices;
 	osg::ref_ptr<osg::Uniform> mColorUniform;
 	std::unique_ptr<class TextPool> mTextPool;
 	bool mDirty = false;

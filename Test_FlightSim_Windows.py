@@ -32,6 +32,10 @@ app.set_aircraft_color(1, (0.05, 0.3, 1.0))
 app.set_aircraft_label(2, "R2")
 app.set_aircraft_color(2, (1.0, 0.06, 0.04))
 
+# Minimap of the aircraft around the camera target in the bottom right corner, toggled with M. It is heading-up with manual=True,
+# N switches to north-up. Aircraft farther than the range (m) are shown at the edge.
+app.minimap_range = 5000
+
 dt = 1.0 / 60.0
 i = 0
 
