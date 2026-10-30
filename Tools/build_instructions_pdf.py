@@ -177,7 +177,7 @@ def architecture_diagram():
     ]
     right = [
         ("skybolt (Python module)", ["PythonBindings.cpp: sb.FlightSim", "aircraft, JSBSim, keyboard, joysticks"]),
-        ("FlightSimVisuals.h \u00b7 FlightSimRecording.h", ["overview camera, trails, tracers,", "minimap, labels, MP4 video (ffmpeg)"]),
+        ("FlightSimVisuals.h \u00b7 FlightSimRecording.h", ["overview camera, trails, tracers, minimap,", "WEZ, labels, MP4 video (ffmpeg)"]),
         ("SkyboltEngine", ["entity templates, sim \u2192 visual", "binding, cameras, input"]),
         ("SkyboltSim", ["world, entities, SimStepper", "(1/dynamicsRate), FdmComponent"]),
         ("JsbSim plugin", ["JsbSimAircraftComponent", "JSBSim 1.3.0 (templates *Jsb*)"]),
@@ -221,7 +221,7 @@ story = []
 story += [
     p("FlightSim + HHMARL_3D_NEW", title),
     p("Components, architecture and parameters", subtitle),
-    p("Status 29 October 2026 \u00b7 FlightSim Python API version 9 \u00b7 JSBSim 1.3.0 at 75 Hz", small),
+    p("Status 30 October 2026 \u00b7 FlightSim Python API version 10 \u00b7 JSBSim 1.3.0 at 75 Hz", small),
     Spacer(1, 6),
 ]
 
@@ -275,7 +275,7 @@ story += subsection("3.1  Components", table(
      ["Joysticks", c("src/Skybolt/SkyboltPythonBindings/") + "<br/>" + c("FlightSimJoysticks.h"),
       f"joysticks, throttles and pedals of the manual aircraft ({c('Tools/joysticks.json')}), read with SDL 2.32.10"],
      ["Visuals", c("src/Skybolt/SkyboltPythonBindings/") + "<br/>" + c("FlightSimVisuals.h"),
-      "overview camera (F3), trails, cannon tracers, minimap (key M)"],
+      "overview camera (F3), trails, cannon tracers, minimap (key M), weapon engagement zones (key Z)"],
      ["Recording", c("src/Skybolt/SkyboltPythonBindings/") + "<br/>" + c("FlightSimRecording.h"),
       "MP4 video of the window view (key R), encoded by ffmpeg in a background thread"],
      ["SkyboltSim", c("src/Skybolt/SkyboltSim"),
@@ -337,6 +337,13 @@ story.append(table(
                  "map of the aircraft around the camera target in the bottom right corner, arrows in their colors with "
                  "their labels and distances (3D) to the camera target, the paths of the other "
                  "aircraft in the last 30 s as dots; in the free view (F4) the camera and its field of view"],
+     ["WEZ", f"{c('set_aircraft_team(id, team)')}: aircraft of different teams are opponents (none without a team) · "
+             f"{c('wez_visible')} (key Z, on) · {c('wez_range')} (m, 3500) · {c('wez_angle')} (degrees, 10: half angle "
+             "of the cone around the velocity): in the cockpit and follow views (F1, F2), a light green circle ahead of the "
+             "camera target while an opponent is in its weapon engagement zone, and a red beam like a flashlight from each "
+             "opponent that has it in its zone, most opaque at the opponent (or at the edge of the window in its direction if "
+             "it is out of view) and fading out towards the camera target (a red border around the window for an opponent "
+             "nearly behind the camera)"],
      ["Cannon", f"{c('fire_tracer(id, speed=1000.0, lifetime=1.0)')}: dark tracer line \u00b7 {c('clear_tracers()')}"],
      ["Recording", f"{c('start_recording(path=None)')}: returns the video file \u00b7 {c('stop_recording()')} \u00b7 "
                    f"{c('recording')} \u00b7 {c('recording_frame_due')} \u00b7 {c('recording_directory')} "
@@ -354,6 +361,7 @@ story += subsection("3.3  Keyboard, mouse and joysticks", table(
      ["Tab", "next aircraft as camera target"],
      ["L \u00b7 T \u00b7 R", "labels \u00b7 trails \u00b7 start/stop recording a video"],
      ["M \u00b7 N", "minimap \u00b7 minimap north-up/heading-up (shown at the top of the window)"],
+     ["Z", "weapon engagement zones in the cockpit and follow views on/off (shown at the top of the window)"],
      ["V \u00b7 B", "vsync on/off (shown at the top of the window and in the help) \u00b7 full screen on/off"],
      ["H \u00b7 Esc", "help \u00b7 exit"],
      ["Mouse, wheel", "rotate the camera; in the overview, rotate around the aircraft and zoom with the wheel"],
@@ -428,14 +436,22 @@ story += subsection("3.5  Visual constants (C++)", table(
                  "in the aircraft colors mixed 45 % with white, beside the arrows where they cover the least of the other "
                  "symbols and texts; distances in steps of 10 m below 1 km, 0.1 km below 10 km; paths: a point every 0.5 s, dots 0.35 % "
                  "large every 0.75 % of the window height along them; free camera: light gray camera 2.25 % long with dashed "
-                 "lines along its horizontal field of view to the outer ring"]],
+                 "lines along its horizontal field of view to the outer ring"],
+     ["WEZ", f"{c('WezIndicators')}: green circle (linear RGB 0.3, 0.9, 0.3) with a radius of 7.2 % of the window height, "
+             "opacity 0.2 inside and 0.5 on its rim, ahead of the nose at the distance of the nearest opponent in the zone; red "
+             "beams (linear RGB 1, 0.03, 0.02) like flashlights from the opponent on the screen (or the edge of the window in its "
+             "direction if it is out of view) to the camera target (the center in the cockpit): opacity 0.5 at the source, falling "
+             "with the power 1.5 to 0 at the camera target; half opacity 1.5 % of the window height from the axis at the source, "
+             "widening at 12° to each side, with slightly sharp sides (sharpness 1.5); within 30° of the direction behind "
+             "the camera they turn gradually into a red border around the window (opacity 0.5 at the edge); drawn below the "
+             "labels and the minimap"]],
     [0.2, 0.8]))
 
 story += subsection("3.6  Video recording", table(
     ["Aspect", "Behavior"],
     [["Start, stop", f"key R or {c('start_recording()')} / {c('stop_recording()')}; also stops when the window is "
                      f"closed or the {c('FlightSim')} is deleted; a red dot in the top left corner shows the recording"],
-     ["Content", "the view of the window (selected camera with labels, trails, minimap and cockpit HUD if shown), without the "
+     ["Content", "the view of the window (selected camera with labels, trails, minimap, WEZ and cockpit HUD if shown), without the "
                  "help message and the red dot; size of the window (rounded down to even pixels)"],
      ["File", f"{c('<recording_directory>/flightsim_<date>_<time>.mp4')}, or the path given to "
               f"{c('start_recording(path)')}; a relative folder is relative to the current directory"],
@@ -485,12 +501,13 @@ story += subsection("4.2  Inference settings (test.py)", table(
      [c("LOCATION"), c("(8.965318, 45.975305)"), "battle field center (longitude, latitude), here Lugano"],
      [f"{c('MINIMAP')}, {c('MINIMAP_RANGE')}", f"{c('True')}, {c('20000')}",
       "minimap of the aircraft around the camera target (3.2), and its range in m"],
+     [c("WEZ"), c("True"), "weapon engagement zones of the cannons in the cockpit and follow views (3.2)"],
      [c("run_inference(num_episodes)"), c("500"), "number of episodes"]],
     [0.26, 0.22, 0.52]))
 
 story += subsection("4.3  FlightSim bridge (env config \"flightsim\")", p(
     f"Options of {c('FlightSimBridge')} in {c('rendering/flightsim.py')}. {c('test.py')} passes {c('jsbsim_states')}, "
-    f"{c('manual_agent')}, {c('minimap')} and {c('minimap_range')}; add further options to {KWARGS_FLIGHTSIM} there.", small), table(
+    f"{c('manual_agent')}, {c('minimap')}, {c('minimap_range')} and {c('wez')}; add further options to {KWARGS_FLIGHTSIM} there.", small), table(
     ["Option", "Default", "Meaning"],
     [[c("jsbsim_states"), q("python"), f"{q('python')} or {q('c++')}"],
      [c("manual_agent"), c("None"), f"ID of the aircraft flown by the human, e.g. {q('B2')}"],
@@ -510,9 +527,11 @@ story += subsection("4.3  FlightSim bridge (env config \"flightsim\")", p(
      [c("minimap_range"), c("20000.0"), "radius of the minimap in m"],
      [c("minimap_heading_up"), c("None"), f"{c('True')}: heading-up, {c('False')}: north-up (key N); {c('None')}: "
                                           "heading-up with a human, otherwise north-up"],
+     [c("wez"), c("True"), f"weapon engagement zones (key Z) of the cannons ({c('CannonSim')}: {c('Rmax_wez')}, "
+                           f"{c('omega_wez')}), with the teams of the env"],
      [c("TEAM_COLORS"), "B " + c("(0.05, 0.3, 1.0)") + "<br/>R " + c("(1.0, 0.06, 0.04)"),
       "module constant: colors of the labels, trails and minimap per team (linear RGB)"],
-     [c("FLIGHTSIM_API_VERSION"), c("9"), "module constant: minimum version of the FlightSim build (9: minimap)"]],
+     [c("FLIGHTSIM_API_VERSION"), c("10"), "module constant: minimum version of the FlightSim build (10: weapon engagement zones)"]],
     [0.25, 0.22, 0.53]))
 
 story += subsection("4.4  Environment (AircombatMARL(task, **kwargs))", table(

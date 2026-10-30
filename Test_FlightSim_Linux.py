@@ -40,6 +40,12 @@ app.set_aircraft_color(2, (1.0, 0.06, 0.04))
 # N switches to north-up. Aircraft farther than the range (m) are shown at the edge.
 app.minimap_range = 5000
 
+# Teams: aircraft of different teams are opponents. In the cockpit and follow views (F1, F2), a light green circle ahead of the
+# camera target shows that an opponent is in its weapon engagement zone (a cone of wez_angle = 10 degrees around its velocity,
+# up to wez_range = 3500 m), a red beam the direction of an opponent that has the camera target in its zone. Z toggles them.
+app.set_aircraft_team(1, "B")
+app.set_aircraft_team(2, "R")
+
 dt = 1.0 / 60.0
 i = 0
 

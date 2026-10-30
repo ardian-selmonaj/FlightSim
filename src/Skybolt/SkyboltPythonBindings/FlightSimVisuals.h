@@ -21,8 +21,11 @@
 #include <SkyboltVis/RenderOperation/RenderOperation.h>
 
 #include <osg/BlendFunc>
+#include <osg/Camera>
 #include <osg/Geode>
 #include <osg/Geometry>
+#include <osg/Program>
+#include <osg/Uniform>
 
 #include <algorithm>
 #include <chrono>
@@ -1375,6 +1378,345 @@ private:
 	float mAspectRatio = 1.0f;
 	double mRange = 20000; //!< m
 	bool mHeadingUp = false;
+};
+
+namespace detail {
+
+inline const char* wezIndicatorsVertexSource = R"(#version 330
+in vec4 osg_Vertex;
+out vec2 hudPosition;
+uniform mat4 osg_ModelViewProjectionMatrix;
+void main()
+{
+	gl_Position = osg_ModelViewProjectionMatrix * osg_Vertex;
+	hudPosition = osg_Vertex.xy;
+}
+)";
+
+//! Fragment shader of WezIndicators, after "#version 330" and "#define MAX_THREATS <WezIndicators::msMaxThreats>".
+//! Positions are in the coordinates of VisHud, half heights of the view from its center.
+inline const char* wezIndicatorsFragmentSource = R"(
+in vec2 hudPosition;
+out vec4 color;
+
+uniform float aspectRatio;
+uniform vec2 target; // aircraft on the screen, where the beams end
+uniform vec3 fireCue; // center and radius of the green circle, radius 0 for none
+uniform vec4 fireCueColor; // linear RGB and opacity of the inside of the circle
+uniform vec2 fireCueRim; // half width and opacity of the rim of the circle
+uniform int threatCount;
+// Per beam: its source, i.e. the opponent on the screen if it is in view, otherwise the edge of the view in its direction, and the
+// weight of a red border all around the view instead of the beam, for an opponent behind the camera
+uniform vec3 threats[MAX_THREATS];
+uniform vec4 threatColor; // linear RGB and opacity at the source of a beam, and at the edge of the view for the border
+uniform float threatFadeExponent; // of the opacity from the source of a beam (the edge of the view for the border) to the target
+uniform float threatEdgeSharpness; // of the sides of the beams, 1 for soft sides
+uniform float threatSourceHalfWidth; // of a beam at its source, where it has half the opacity
+uniform float threatSpread; // tangent of the half angle of a beam, where it has half the opacity
+
+// Distance from the target to the edge of the view in the unit direction
+float distanceToEdge(vec2 direction)
+{
+	vec2 edge = vec2(direction.x >= 0.0 ? aspectRatio : -aspectRatio, direction.y >= 0.0 ? 1.0 : -1.0);
+	float x = abs(direction.x) > 1e-5 ? (edge.x - target.x) / direction.x : 1e5;
+	float y = abs(direction.y) > 1e-5 ? (edge.y - target.y) / direction.y : 1e5;
+	return max(min(x, y), 1e-3);
+}
+
+// Opacity of a beam like a flashlight from the source to the target: narrowest and most opaque at the source, widening and fading
+// out towards the target, where it ends
+float beam(vec2 source)
+{
+	vec2 axis = target - source;
+	float axisLength = length(axis);
+	if (axisLength < 1e-4)
+	{
+		return 0.0;
+	}
+	axis /= axisLength;
+	vec2 offset = hudPosition - source;
+	float along = dot(offset, axis);
+	// Distance from the axis in half widths, with a round end behind the source
+	float halfWidths = along > 0.0 ? length(offset - along * axis) / (threatSourceHalfWidth + along * threatSpread)
+		: length(offset) / threatSourceHalfWidth;
+	float profile = exp2(-pow(halfWidths * halfWidths, threatEdgeSharpness));
+	return profile * pow(clamp(1.0 - along / axisLength, 0.0, 1.0), threatFadeExponent);
+}
+
+void main()
+{
+	vec2 offset = hudPosition - target;
+	float distance = length(offset);
+	vec2 direction = distance > 1e-6 ? offset / distance : vec2(0.0);
+
+	// Red border all around the view, most opaque at the edge and transparent at the target
+	float border = pow(min(distance / distanceToEdge(direction), 1.0), threatFadeExponent);
+	float threatAlpha = 0.0;
+	for (int i = 0; i < threatCount; ++i)
+	{
+		float opacity = mix(beam(threats[i].xy), border, threats[i].z);
+		threatAlpha = 1.0 - (1.0 - threatAlpha) * (1.0 - threatColor.a * opacity);
+	}
+
+	float fireCueAlpha = 0.0;
+	if (fireCue.z > 0.0)
+	{
+		float d = length(hudPosition - fireCue.xy);
+		float aa = fwidth(d); // smooth edges of about a pixel
+		float inside = 1.0 - smoothstep(fireCue.z - aa, fireCue.z + aa, d);
+		float rim = 1.0 - smoothstep(fireCueRim.x - aa, fireCueRim.x + aa, abs(d - fireCue.z));
+		fireCueAlpha = max(inside * fireCueColor.a, rim * fireCueRim.y);
+	}
+
+	// The beams over the circle, so that a threat is also seen in the circle, e.g. of an opponent ahead
+	float alpha = threatAlpha + fireCueAlpha * (1.0 - threatAlpha);
+	vec3 rgb = (threatColor.rgb * threatAlpha + fireCueColor.rgb * fireCueAlpha * (1.0 - threatAlpha)) / max(alpha, 1e-6);
+	color = vec4(rgb, alpha);
+}
+)";
+
+} // namespace detail
+
+//! Indicates over the view the weapon engagement zones (WEZ) of an aircraft, e.g. the camera target, and of its opponents: a light
+//! green circle ahead of its nose while an opponent is in its WEZ, so that firing would make sense, and for each opponent that has the
+//! aircraft in its WEZ a red beam like a flashlight from the opponent to the aircraft on the screen: narrow and most opaque at the opponent,
+//! widening and fading out towards the aircraft.
+//! A WEZ is a cone along the velocity of its aircraft (along its nose while it stands still) up to a range, like the one of the cannon of
+//! HHMARL_3D_NEW (CannonSim). A beam starts at its opponent if it is in view, otherwise at the edge of the view in the direction where the
+//! opponent would be seen by turning the camera towards it. For an opponent nearly behind the camera, whose direction on the screen changes
+//! quickly, the beam turns into a red border all around the view.
+//! It is drawn over the view below the labels and the minimap, so videos show it.
+class WezIndicators
+{
+public:
+	struct Aircraft
+	{
+		sim::Vector3 position; //!< geocentric
+		sim::Quaternion orientation; //!< geocentric
+		sim::Vector3 velocity; //!< geocentric
+	};
+
+	//! Camera of the view
+	struct Camera
+	{
+		sim::Vector3 position; //!< geocentric
+		sim::Quaternion orientation; //!< geocentric, x forward, y right, z down
+		double fovY; //!< rad
+	};
+
+	//! @param parentCamera draws the indicators over the view, e.g. the camera of the final render target, below its other children
+	explicit WezIndicators(const osg::ref_ptr<osg::Camera>& parentCamera) :
+		mParentCamera(parentCamera),
+		mCamera(new osg::Camera),
+		mGeode(new osg::Geode),
+		mAspectRatioUniform(new osg::Uniform("aspectRatio", 1.0f)),
+		mTargetUniform(new osg::Uniform("target", osg::Vec2f(0, 0))),
+		mFireCueUniform(new osg::Uniform("fireCue", osg::Vec3f(0, 0, 0))),
+		mThreatCountUniform(new osg::Uniform("threatCount", 0)),
+		mThreatsUniform(new osg::Uniform(osg::Uniform::FLOAT_VEC3, "threats", msMaxThreats))
+	{
+		// Like VisHud, in half heights of the view from its center
+		mCamera->setReferenceFrame(osg::Transform::ABSOLUTE_RF);
+		mCamera->setViewMatrix(osg::Matrix::identity());
+		mCamera->setProjectionMatrix(osg::Matrix::ortho2D(-1, 1, -1, 1));
+		mCamera->setClearMask(0);
+		mCamera->setRenderOrder(osg::Camera::POST_RENDER);
+		mCamera->setAllowEventFocus(false);
+
+		// A quad over the whole view, wide enough for any aspect ratio, whose fragment shader draws the indicators
+		osg::ref_ptr<osg::Vec3Array> vertices = new osg::Vec3Array;
+		for (const osg::Vec3& vertex : {osg::Vec3(-100, -1, 0), osg::Vec3(100, -1, 0), osg::Vec3(-100, 1, 0), osg::Vec3(100, 1, 0)})
+		{
+			vertices->push_back(vertex);
+		}
+		osg::ref_ptr<osg::Geometry> quad = new osg::Geometry;
+		vis::configureDrawable(*quad);
+		quad->setVertexArray(vertices);
+		quad->addPrimitiveSet(new osg::DrawArrays(GL_TRIANGLE_STRIP, 0, 4));
+		quad->setCullingActive(false);
+		mGeode->addDrawable(quad);
+		mGeode->setCullingActive(false);
+
+		osg::ref_ptr<osg::Program> program = new osg::Program;
+		program->addShader(new osg::Shader(osg::Shader::VERTEX, detail::wezIndicatorsVertexSource));
+		program->addShader(new osg::Shader(osg::Shader::FRAGMENT, std::string("#version 330\n#define MAX_THREATS ")
+			+ std::to_string(msMaxThreats) + "\n" + detail::wezIndicatorsFragmentSource));
+
+		osg::StateSet* stateSet = mGeode->getOrCreateStateSet();
+		stateSet->setAttributeAndModes(program, osg::StateAttribute::ON);
+		stateSet->setAttributeAndModes(new osg::BlendFunc(osg::BlendFunc::SRC_ALPHA, osg::BlendFunc::ONE_MINUS_SRC_ALPHA));
+		stateSet->setMode(GL_DEPTH_TEST, osg::StateAttribute::OFF | osg::StateAttribute::OVERRIDE);
+		stateSet->setMode(GL_CULL_FACE, osg::StateAttribute::OFF | osg::StateAttribute::OVERRIDE);
+		for (osg::Uniform* uniform : {mAspectRatioUniform.get(), mTargetUniform.get(), mFireCueUniform.get(), mThreatCountUniform.get(), mThreatsUniform.get()})
+		{
+			stateSet->addUniform(uniform);
+		}
+		stateSet->addUniform(new osg::Uniform("fireCueColor", msFireCueColor));
+		stateSet->addUniform(new osg::Uniform("fireCueRim", osg::Vec2f(msFireCueRimHalfWidth, msFireCueRimAlpha)));
+		stateSet->addUniform(new osg::Uniform("threatColor", msThreatColor));
+		stateSet->addUniform(new osg::Uniform("threatFadeExponent", msThreatFadeExponent));
+		stateSet->addUniform(new osg::Uniform("threatEdgeSharpness", msThreatEdgeSharpness));
+		stateSet->addUniform(new osg::Uniform("threatSourceHalfWidth", msThreatSourceHalfWidth));
+		stateSet->addUniform(new osg::Uniform("threatSpread", float(std::tan(msThreatHalfAngle))));
+
+		mGeode->setNodeMask(0u); // nothing to draw yet
+		mCamera->addChild(mGeode);
+		mParentCamera->insertChild(0, mCamera);
+	}
+
+	~WezIndicators()
+	{
+		mParentCamera->removeChild(mCamera);
+	}
+
+	void setVisible(bool visible) { mCamera->setNodeMask(visible ? ~0u : 0u); }
+	bool isVisible() const { return mCamera->getNodeMask() != 0; }
+
+	//! @param range of the WEZ in m
+	void setRange(double range) { mRange = range; }
+	double getRange() const { return mRange; }
+
+	//! @param halfAngle of the cone of the WEZ in rad, the largest angle between the velocity and the line of sight to the target
+	void setHalfAngle(double halfAngle) { mHalfAngle = halfAngle; }
+	double getHalfAngle() const { return mHalfAngle; }
+
+	//! @returns true if the position is in the WEZ of the aircraft
+	bool isInZone(const Aircraft& aircraft, const sim::Vector3& position) const
+	{
+		sim::Vector3 lineOfSight = position - aircraft.position;
+		double distance = glm::length(lineOfSight);
+		double speed = glm::length(aircraft.velocity);
+		sim::Vector3 direction = (speed > msMinSpeed) ? aircraft.velocity / speed : aircraft.orientation * sim::Vector3(1, 0, 0);
+		return distance > 0.0 && distance < mRange && glm::dot(lineOfSight, direction) > distance * std::cos(mHalfAngle);
+	}
+
+	//! Draws the indicators if they are visible
+	//! @param aspectRatio width / height of the view
+	//! @param aircraft whose WEZ and threats are indicated, none to draw nothing
+	//! @param opponents of the aircraft
+	void update(float aspectRatio, const Camera& camera, const std::optional<Aircraft>& aircraft, const std::vector<Aircraft>& opponents)
+	{
+		mGeode->setNodeMask(0u);
+		if (!isVisible() || !aircraft)
+		{
+			return;
+		}
+
+		const sim::Quaternion cameraFromWorld = glm::inverse(camera.orientation);
+		const double tanHalfFovY = std::tan(0.5 * camera.fovY);
+		// x forward, y right, z down
+		auto toCamera = [&] (const sim::Vector3& position) { return cameraFromWorld * (position - camera.position); };
+		// Position on the screen of a point in camera coordinates in front of the camera
+		auto toScreen = [&] (const sim::Vector3& p) { return glm::vec2(float(p.y / (tanHalfFovY * p.x)), float(-p.z / (tanHalfFovY * p.x))); };
+
+		// The beams converge at the aircraft on the screen, or at the center of the view if the camera is in it or close to it (cockpit)
+		glm::vec2 target(0.0f);
+		if (sim::Vector3 p = toCamera(aircraft->position); p.x > msMinTargetDepth)
+		{
+			target = glm::clamp(toScreen(p), glm::vec2(-aspectRatio, -1.0f), glm::vec2(aspectRatio, 1.0f));
+		}
+
+		// Green circle ahead of the nose, at the distance of the nearest opponent in the WEZ
+		std::optional<double> nearest;
+		for (const Aircraft& opponent : opponents)
+		{
+			if (isInZone(*aircraft, opponent.position))
+			{
+				double distance = glm::length(opponent.position - aircraft->position);
+				nearest = std::min(nearest.value_or(distance), distance);
+			}
+		}
+		osg::Vec3f fireCue(0, 0, 0);
+		if (nearest)
+		{
+			if (sim::Vector3 p = toCamera(aircraft->position + aircraft->orientation * sim::Vector3(*nearest, 0, 0)); p.x > msNearDistance)
+			{
+				glm::vec2 center = toScreen(p);
+				fireCue = osg::Vec3f(center.x, center.y, msFireCueRadius);
+			}
+		}
+
+		// Red beam to the aircraft from each opponent that has it in its WEZ
+		int threatCount = 0;
+		for (const Aircraft& opponent : opponents)
+		{
+			if (threatCount == msMaxThreats || !isInZone(opponent, aircraft->position))
+			{
+				continue;
+			}
+			// From the opponent on the screen if it is in view, otherwise from the edge of the view in the direction where it would be
+			// seen by turning the camera towards it
+			sim::Vector3 p = toCamera(opponent.position);
+			glm::vec2 direction(float(p.y), float(-p.z));
+			std::optional<glm::vec2> position; // of the opponent on the screen if it is in view
+			if (p.x > msNearDistance)
+			{
+				glm::vec2 projected = toScreen(p);
+				direction = projected - target;
+				if (std::abs(projected.x) <= aspectRatio && std::abs(projected.y) <= 1.0f)
+				{
+					position = projected;
+				}
+			}
+			float length = glm::length(direction);
+			direction = (length > 1e-6f) ? direction / length : glm::vec2(0.0f, -1.0f);
+			glm::vec2 source = position.value_or(target + direction * calcDistanceToEdge(target, direction, aspectRatio));
+
+			// Within msThreatBorderAngle of the direction behind the camera, the beam turns into a red border all around the view
+			double angleOffTail = std::acos(math::clamp(-p.x / std::max(glm::length(p), 1e-6), -1.0, 1.0));
+			double t = math::clamp(1.0 - angleOffTail / msThreatBorderAngle, 0.0, 1.0);
+			float borderWeight = float(t * t * (3.0 - 2.0 * t)); // smoothstep
+			mThreatsUniform->setElement(threatCount++, osg::Vec3f(source.x, source.y, borderWeight));
+		}
+
+		if (fireCue.z() > 0.0f || threatCount > 0)
+		{
+			mCamera->setProjectionMatrix(osg::Matrix::ortho2D(-aspectRatio, aspectRatio, -1, 1));
+			mAspectRatioUniform->set(aspectRatio);
+			mTargetUniform->set(osg::Vec2f(target.x, target.y));
+			mFireCueUniform->set(fireCue);
+			mThreatCountUniform->set(threatCount);
+			mGeode->setNodeMask(~0u);
+		}
+	}
+
+private:
+	//! @returns the distance from the position in the view to the edge of the view in the unit direction
+	static float calcDistanceToEdge(const glm::vec2& position, const glm::vec2& direction, float aspectRatio)
+	{
+		float x = (std::abs(direction.x) > 1e-5f) ? ((direction.x > 0.0f ? aspectRatio : -aspectRatio) - position.x) / direction.x : 1e5f;
+		float y = (std::abs(direction.y) > 1e-5f) ? ((direction.y > 0.0f ? 1.0f : -1.0f) - position.y) / direction.y : 1e5f;
+		return std::max(std::min(x, y), 0.0f);
+	}
+
+	static constexpr int msMaxThreats = 8; //!< beams drawn at most
+	static constexpr double msMinSpeed = 1; //!< m/s, below which the WEZ is along the nose instead of the velocity
+	static constexpr double msNearDistance = 1; //!< m in front of the camera, closer points are not projected on the screen
+	static constexpr double msMinTargetDepth = 10; //!< m in front of the camera, closer aircraft have the beams end at the center
+	// Sizes in half heights of the view, like the coordinates of VisHud
+	static constexpr float msFireCueRadius = 0.144f;
+	static constexpr float msFireCueRimHalfWidth = 0.006f;
+	static constexpr float msFireCueRimAlpha = 0.5f;
+	static inline const osg::Vec4f msFireCueColor = osg::Vec4f(0.3f, 0.9f, 0.3f, 0.2f); //!< light green as displayed, opacity of the inside
+	static constexpr float msThreatSourceHalfWidth = 0.03f; //!< of a beam at its source, where it has half its opacity
+	static constexpr double msThreatHalfAngle = 0.2094; //!< rad (12 degrees), half the angle at which a beam widens from its source
+	static constexpr float msThreatFadeExponent = 1.5f; //!< of the opacity from the source of a beam to the target, above 1 hazier in between
+	static constexpr float msThreatEdgeSharpness = 1.5f; //!< of the sides of the beams, 1 for soft sides like a Gaussian
+	//! rad (30 degrees): within this angle of the direction behind the camera, a beam turns gradually into a red border around the view
+	static constexpr double msThreatBorderAngle = 0.5236;
+	//! Red as displayed, opacity at the source of a beam, and at the edge of the view for the border
+	static inline const osg::Vec4f msThreatColor = osg::Vec4f(1.0f, 0.03f, 0.02f, 0.5f);
+
+	osg::ref_ptr<osg::Camera> mParentCamera;
+	osg::ref_ptr<osg::Camera> mCamera;
+	osg::ref_ptr<osg::Geode> mGeode;
+	osg::ref_ptr<osg::Uniform> mAspectRatioUniform;
+	osg::ref_ptr<osg::Uniform> mTargetUniform;
+	osg::ref_ptr<osg::Uniform> mFireCueUniform;
+	osg::ref_ptr<osg::Uniform> mThreatCountUniform;
+	osg::ref_ptr<osg::Uniform> mThreatsUniform;
+	double mRange = 3500; //!< m
+	double mHalfAngle = 10 * math::degToRadD(); //!< rad, like the cannon of HHMARL_3D_NEW
 };
 
 //! Short message at the top of the window, e.g. the mode that a key switched. As operation with the priority

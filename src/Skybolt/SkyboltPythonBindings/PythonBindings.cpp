@@ -283,6 +283,7 @@ L: Toggle labels
 T: Toggle trails
 M: Toggle minimap
 N: Minimap north-up/heading-up
+Z: Toggle weapon engagement zones (F1, F2)
 R: Start/stop recording
 )";
 	message += std::string("V: Toggle vsync (now ") + (vsync ? "on" : "off") + ")\nB: Toggle full screen\n";
@@ -687,6 +688,8 @@ public:
 			// Heading-up for the human pilot, north-up for observers
 			minimap = std::make_unique<TacticalMinimap>(overlayCamera);
 			minimap->setHeadingUp(manual);
+
+			wezIndicators = std::make_unique<WezIndicators>(overlayCamera);
 		}
 
 		// second Window
@@ -997,6 +1000,13 @@ public:
 		}
 	}
 
+	//! Sets the team of the aircraft, e.g. "B" or "R". Aircraft of different teams are opponents, whose weapon engagement zones are
+	//! indicated (see set_wez_visible()). Aircraft without a team (an empty one, the default) have no opponents.
+	void set_aircraft_team(int id, const std::string& team)
+	{
+		displays[id].team = team;
+	}
+
 	//! Sets the throttle in [0, 1] of an aircraft without flight dynamics, e.g. moved from Python, which its nozzles show while it is the
 	//! camera target (see add_aircraft()). Aircraft with JSBSim show their throttle command fcs/throttle-cmd-norm instead, the position
 	//! of the throttle lever (the F-16 has afterburner above 0.5).
@@ -1070,6 +1080,47 @@ public:
 		if (minimap)
 		{
 			minimap->setHeadingUp(headingUp);
+		}
+	}
+
+	//! Indications of the weapon engagement zones (WEZ) of the camera target and of its opponents (see set_aircraft_team()) in the
+	//! cockpit and follow views (key Z): a light green circle ahead of the camera target while an opponent is in its WEZ, and a red beam
+	//! from the direction of each opponent that has the camera target in its WEZ, see WezIndicators. On by default.
+	bool get_wez_visible() const { return wezIndicators && wezIndicators->isVisible(); }
+	void set_wez_visible(bool visible)
+	{
+		if (wezIndicators)
+		{
+			wezIndicators->setVisible(visible);
+		}
+	}
+
+	//! @returns the range in m of the WEZ of all aircraft
+	double get_wez_range() const { return wezIndicators ? wezIndicators->getRange() : 0.0; }
+	void set_wez_range(double range)
+	{
+		if (!(range > 0))
+		{
+			throw std::invalid_argument("FlightSim: wez_range must be positive");
+		}
+		if (wezIndicators)
+		{
+			wezIndicators->setRange(range);
+		}
+	}
+
+	//! @returns the half angle in degrees of the cone of the WEZ of all aircraft, the largest angle between the velocity of an aircraft
+	//! and the line of sight to an opponent in its WEZ
+	double get_wez_angle() const { return wezIndicators ? wezIndicators->getHalfAngle() * math::radToDegD() : 0.0; }
+	void set_wez_angle(double angle)
+	{
+		if (!(angle > 0 && angle < 180))
+		{
+			throw std::invalid_argument("FlightSim: wez_angle must be between 0 and 180 degrees");
+		}
+		if (wezIndicators)
+		{
+			wezIndicators->setHalfAngle(angle * math::degToRadD());
 		}
 	}
 
@@ -1171,6 +1222,7 @@ public:
 	{
 		updateLabels();
 		updateMinimap();
+		updateWezIndicators();
 		if (recorder)
 		{
 			recorder->beforeRender(stepper->getTime());
@@ -1435,6 +1487,13 @@ private:
 				{
 					set_minimap_heading_up(!get_minimap_heading_up());
 					notice->show(get_minimap_heading_up() ? "Minimap heading-up" : "Minimap north-up");
+				}
+				break;
+			case KC_Z:
+				if (!repeat)
+				{
+					set_wez_visible(!get_wez_visible());
+					notice->show(get_wez_visible() ? "Weapon engagement zones on" : "Weapon engagement zones off");
 				}
 				break;
 			case KC_R:
@@ -1736,6 +1795,51 @@ private:
 		minimap->update(float(getOverlayAspectRatio()), stepper->getTime(), center, others, camera);
 	}
 
+	//! @returns the team of set_aircraft_team(), empty if none
+	std::string getTeam(int id) const
+	{
+		auto display = displays.find(id);
+		return (display != displays.end()) ? display->second.team : std::string();
+	}
+
+	//! Indicates the weapon engagement zones of the camera target and of its visible opponents in the cockpit and follow views
+	void updateWezIndicators()
+	{
+		if (!wezIndicators)
+		{
+			return;
+		}
+
+		std::optional<WezIndicators::Aircraft> target;
+		std::vector<WezIndicators::Aircraft> opponents;
+		std::string targetTeam = cameraTargetId ? getTeam(*cameraTargetId) : std::string();
+		if ((cameraView == "Cockpit" || cameraView == "Follow") && !targetTeam.empty())
+		{
+			for (const auto& [id, aircraft] : aircraftMap)
+			{
+				std::optional<Vector3> position = getPosition(*aircraft);
+				std::optional<Quaternion> orientation = getOrientation(*aircraft);
+				if (!position || !orientation || !isVisible(id))
+				{
+					continue;
+				}
+				WezIndicators::Aircraft item{*position, *orientation, getVelocity(*aircraft).value_or(math::dvec3Zero())};
+				if (id == cameraTargetId)
+				{
+					target = item;
+				}
+				else if (std::string team = getTeam(id); !team.empty() && team != targetTeam)
+				{
+					opponents.push_back(item);
+				}
+			}
+		}
+
+		WezIndicators::Camera camera{getPosition(*simCamera).value_or(math::dvec3Zero()), getOrientation(*simCamera).value_or(math::dquatIdentity()),
+			simCamera->getFirstComponentRequired<CameraComponent>()->getState().fovY};
+		wezIndicators->update(float(getOverlayAspectRatio()), camera, target, opponents);
+	}
+
 private:
 	bool manualControl;
 	bool multiwindowEnabled;
@@ -1778,13 +1882,15 @@ private:
 		std::string label;
 		osg::Vec4f color = osg::Vec4f(1, 1, 1, 1);
 		osg::ref_ptr<VisHud> labelHud;
+		std::string team; //!< of set_aircraft_team(), empty if none
 	};
-	std::map<int, AircraftDisplay> displays; //!< label and color by aircraft ID
+	std::map<int, AircraftDisplay> displays; //!< label, color and team by aircraft ID
 	bool labelsVisible = true;
 	std::shared_ptr<AircraftTrails> trails; //!< null without a window
 	std::shared_ptr<CannonTracers> tracers; //!< null without a window
 	std::shared_ptr<NozzleGlow> nozzleGlow; //!< null without a window
 	std::unique_ptr<TacticalMinimap> minimap; //!< null without a window
+	std::unique_ptr<WezIndicators> wezIndicators; //!< null without a window
 	std::map<int, std::vector<NozzleGlow::Nozzle>> aircraftNozzles; //!< of the entity templates, by aircraft ID
 	std::map<int, double> aircraftThrottles; //!< of set_aircraft_throttle(), by aircraft ID
 
@@ -2064,7 +2170,7 @@ PYBIND11_MODULE(skybolt, m) {
 	m.def("scaleAndSaveModel", &scaleAndSaveModel, py::arg("inpath"), py::arg("scale"));
 
 	//! Version of the FlightSim Python API, raised when it changes, so that Python code can check that the build is up to date
-	m.attr("FLIGHTSIM_API_VERSION") = 9;
+	m.attr("FLIGHTSIM_API_VERSION") = 10;
 
 	py::class_<FlightSim>(m, "FlightSim", "Shows aircraft over the earth and simulates them, see add_aircraft()")
 	.def(py::init<int,int,int,int,const std::map<int, std::string>&,bool,bool,double,bool>(),
@@ -2095,6 +2201,7 @@ PYBIND11_MODULE(skybolt, m) {
 	.def("select_camera_view", &FlightSim::select_camera_view, py::arg("view"))
 	.def("set_aircraft_label", &FlightSim::set_aircraft_label, py::arg("id"), py::arg("label"))
 	.def("set_aircraft_color", &FlightSim::set_aircraft_color, py::arg("id"), py::arg("color"))
+	.def("set_aircraft_team", &FlightSim::set_aircraft_team, py::arg("id"), py::arg("team"))
 	.def("set_aircraft_throttle", &FlightSim::set_aircraft_throttle, py::arg("id"), py::arg("throttle"))
 	.def_property("labels_visible", &FlightSim::get_labels_visible, &FlightSim::set_labels_visible)
 	.def_property("trails_visible", &FlightSim::get_trails_visible, &FlightSim::set_trails_visible)
@@ -2103,6 +2210,9 @@ PYBIND11_MODULE(skybolt, m) {
 	.def_property("minimap_visible", &FlightSim::get_minimap_visible, &FlightSim::set_minimap_visible)
 	.def_property("minimap_range", &FlightSim::get_minimap_range, &FlightSim::set_minimap_range)
 	.def_property("minimap_heading_up", &FlightSim::get_minimap_heading_up, &FlightSim::set_minimap_heading_up)
+	.def_property("wez_visible", &FlightSim::get_wez_visible, &FlightSim::set_wez_visible)
+	.def_property("wez_range", &FlightSim::get_wez_range, &FlightSim::set_wez_range)
+	.def_property("wez_angle", &FlightSim::get_wez_angle, &FlightSim::set_wez_angle)
 	.def("set_manual_aircraft", &FlightSim::set_manual_aircraft, py::arg("id"))
 	.def("get_manual_controls", &FlightSim::get_manual_controls)
 	.def("consume_fire_requests", &FlightSim::consume_fire_requests)
