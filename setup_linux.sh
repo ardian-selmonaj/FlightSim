@@ -5,8 +5,8 @@
 # (e.g. to rebuild after changing the C++ code):
 #   1. System packages: compiler, CMake, OpenGL and X11 development files
 #      (installed with apt, asks for the sudo password if packages are missing)
-#   2. Python 3.11 virtual environment .venv with conan, jsbsim, requests, imageio-ffmpeg, reportlab, pygame-ce and pip, created with uv
-#      (uv and Python 3.11 are installed for the current user if they are missing)
+#   2. Python 3.12 virtual environment .venv with conan, jsbsim, requests, imageio-ffmpeg, reportlab, pygame-ce and pip, created with uv
+#      (uv and Python 3.12 are installed for the current user if they are missing)
 #   3. Compiler and CMake (a newer CMake is installed into .venv if the one of the system is too old)
 #   4. Conan default profile
 #   5. Conan build of FlightSim
@@ -16,8 +16,8 @@
 #
 # Usage: ./setup_linux.sh [--build-dir DIR] [--python PATH] [--jobs N]
 #   --build-dir DIR  Build output folder. Defaults to FlightSimBuild next to the repository, where flightsim_env.py looks for it.
-#   --python PATH    Python 3.11 for creating .venv, e.g. /usr/bin/python3.11 (needs the development files, e.g. python3.11-dev).
-#                    Defaults to a Python 3.11 managed by uv.
+#   --python PATH    Python 3.12 for creating .venv, e.g. /usr/bin/python3.12 (needs the development files, e.g. python3.12-dev).
+#                    Defaults to a Python 3.12 managed by uv (Ubuntu 26.04 has no Python 3.12 packages).
 #   --jobs N         Number of parallel compile jobs. Defaults to what the CPU cores and the memory allow.
 
 if [ -z "${BASH_VERSION:-}" ]; then
@@ -27,7 +27,7 @@ fi
 
 set -Eeuo pipefail
 
-PYTHON_VERSION="3.11"
+PYTHON_VERSION="3.12"
 CONAN_VERSION="2.22.0"
 JSBSIM_VERSION="1.3.0"    # same as the JSBSim of the C++ build (conanfile.py) and of HHMARL_3D_NEW
 IMAGEIO_FFMPEG_VERSION="0.6.0"  # its ffmpeg encodes the videos recorded with key R
@@ -234,6 +234,21 @@ if [ -z "$JOBS" ]; then
     if [ "$JOBS" -lt 1 ]; then JOBS=1; fi
 fi
 echo "Compiling with $JOBS parallel jobs"
+
+# CMake keeps the Python it found in its cache as long as the path of .venv/bin/python stays the same. A build configured
+# for another Python version (e.g. after .venv was created again with a new Python) is therefore configured again from scratch.
+cmake_cache="$BUILD_DIR/CMakeCache.txt"
+cached_python=""
+if [ -f "$cmake_cache" ]; then
+    cached_python="$(sed -n 's/^_Python3_INTERPRETER_PROPERTIES:INTERNAL=[^;]*;\([0-9]*\);\([0-9]*\);.*/\1.\2/p' "$cmake_cache" | head -n 1)"
+fi
+if [ -n "$cached_python" ] && [ "$cached_python" != "$PYTHON_VERSION" ]; then
+    echo "The build was configured for Python $cached_python, configuring it again for Python $PYTHON_VERSION"
+    rm -f "$cmake_cache"
+    # The skybolt module of the old Python version, e.g. skybolt.cpython-311-x86_64-linux-gnu.so
+    module_name="skybolt$("$VENV_PYTHON" -c 'import sysconfig; print(sysconfig.get_config_var("EXT_SUFFIX"))')"
+    find "$BUILD_DIR/lib" -maxdepth 1 -name 'skybolt.cpython-*' ! -name "$module_name" -print -delete 2>/dev/null || true
+fi
 
 conan build "$REPO_DIR" \
     --output-folder="$BUILD_DIR" \

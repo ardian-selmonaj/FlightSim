@@ -26,7 +26,7 @@ if not defined ERROR if not exist "%VENV_PYTHON%" set "ERROR=%VENV_PYTHON% not f
 pushd "%REPO_DIR%"
 
 if not defined ERROR echo ==^> Building into %BUILD_DIR%, only what changed is compiled again
-if not defined ERROR "%CMAKE_EXE%" --build "%BUILD_DIR%" --config Release --parallel || set "ERROR=Build failed. If skybolt.cp311-win_amd64.pyd cannot be opened (LNK1104), close all Python programs that use skybolt and run this again."
+if not defined ERROR "%CMAKE_EXE%" --build "%BUILD_DIR%" --config Release --parallel || set "ERROR=Build failed. If skybolt.cp312-win_amd64.pyd cannot be opened (LNK1104), close all Python programs that use skybolt and run this again."
 
 if not defined ERROR echo.
 if not defined ERROR echo ==^> Checking that the skybolt Python module loads

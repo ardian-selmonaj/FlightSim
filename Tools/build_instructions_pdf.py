@@ -56,12 +56,12 @@ def c(text):
 
 
 def q(text):
-    """Quoted string in the monospace font, e.g. "python" (Python 3.11 f-strings cannot contain the quotes)."""
+    """Quoted string in the monospace font, e.g. "python"."""
     return c('"' + text + '"')
 
 
 def win(path):
-    """Windows path from a path with slashes (Python 3.11 f-strings cannot contain backslashes)."""
+    """Windows path from a path with slashes."""
     return path.replace("/", "\\")
 
 
@@ -379,7 +379,7 @@ story += subsection("3.3  Keyboard, mouse and joysticks", table(
 story += subsection("3.4  Setup, tools and settings", table(
     ["Item", "Parameters and use"],
     [[c("setup_windows.bat"), f"full setup; {c('-BuildDir <folder>')}, {c('-PythonExe <python.exe>')}"],
-     [c("setup_linux.sh"), f"full setup; {c('--build-dir <folder>')}, {c('--python <python3.11>')}, {c('--jobs N')}"],
+     [c("setup_linux.sh"), f"full setup; {c('--build-dir <folder>')}, {c('--python <python3.12>')}, {c('--jobs N')}"],
      [f"{c('Tools/update_pythonbindings_windows.bat')}<br/>{c('Tools/update_pythonbindings_linux.sh')}",
       f"rebuild after C++ changes (Linux: {c('--jobs N')}). Run the full setup instead after adding or removing "
       "source files or changing dependencies."],
@@ -638,7 +638,7 @@ story.append(table(
      ["Update this PDF", c(win(".venv/Scripts/python Tools/build_instructions_pdf.py"))]],
     [0.2, 0.8]))
 story.append(Spacer(1, 4))
-story.append(p(f"The venv of HHMARL_3D_NEW needs Python 3.11, like the {c('skybolt')} module of FlightSim, and "
+story.append(p(f"The venv of HHMARL_3D_NEW needs Python 3.12, like the {c('skybolt')} module of FlightSim, and "
                f"{c('imageio-ffmpeg')} of its {c('requirements.txt')} for the videos.", small))
 
 
