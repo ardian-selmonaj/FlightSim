@@ -97,6 +97,50 @@ def use_dedicated_gpu():
                 os.environ.setdefault("DRI_PRIME", "pci-" + re.sub(r"[:.]", "_", dedicated[0]))
 
 
+def file_version(path):
+    """Returns the file version of a Windows DLL or EXE as a tuple, e.g. (14, 44, 35211, 0), or None."""
+    version_dll = ctypes.WinDLL("version")
+    size = version_dll.GetFileVersionInfoSizeW(str(path), None)
+    if not size:
+        return None
+    info = ctypes.create_string_buffer(size)
+    value, length = ctypes.c_void_p(), ctypes.c_uint()
+    if not (version_dll.GetFileVersionInfoW(str(path), 0, size, info)
+            and version_dll.VerQueryValueW(info, "\\", ctypes.byref(value), ctypes.byref(length))):
+        return None
+    fixed = ctypes.cast(value, ctypes.POINTER(ctypes.c_uint32 * 4)).contents  # VS_FIXEDFILEINFO up to dwFileVersionLS
+    return fixed[2] >> 16, fixed[2] & 0xFFFF, fixed[3] >> 16, fixed[3] & 0xFFFF
+
+
+def check_cpp_runtime():
+    """Warns if the Visual C++ runtime (msvcp140.dll) that the skybolt module will use is older than the Visual C++ that built
+    it. Such a runtime is not compatible and crashes skybolt with an access violation (exit code 0xC0000005)."""
+    import sysconfig
+    module = RELEASE / ("skybolt" + sysconfig.get_config_var("EXT_SUFFIX"))
+    if not module.is_file():
+        return  # importing skybolt reports it
+    # Linker version in the PE header of the module, which is the version of Visual C++ that built it, e.g. (14, 44)
+    with open(module, "rb") as f:
+        header = f.read(4096)
+    pe = int.from_bytes(header[0x3C:0x40], "little")
+    built_with = (header[pe + 26], header[pe + 27])
+
+    # Loaded with the same search order as the module loads it (or the one already loaded), so the module gets this one
+    runtime = ctypes.WinDLL("msvcp140.dll")
+    kernel32 = ctypes.WinDLL("kernel32")
+    kernel32.GetModuleFileNameW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_uint32]
+    buffer = ctypes.create_unicode_buffer(32768)
+    if not kernel32.GetModuleFileNameW(runtime._handle, buffer, len(buffer)):
+        return
+    version = file_version(buffer.value)
+    if version and version[:2] < built_with:
+        print(f"FlightSim: WARNING: the Visual C++ runtime {buffer.value} (version {'.'.join(map(str, version))}) is older than "
+              f"the Visual C++ {built_with[0]}.{built_with[1]} that built skybolt, which can then crash with an access "
+              "violation (exit code 0xC0000005). Install the latest Visual C++ Redistributable "
+              "(https://aka.ms/vs/17/release/vc_redist.x64.exe). If the runtime is not the one in C:\\Windows\\System32, "
+              "another module imported before flightsim_env loaded it: import flightsim_env first.")
+
+
 if not RUN_ENV_FILE.is_file():
     raise ImportError(f"FlightSim build not found in '{SKYBOLT_DIR}'. Run {SETUP_SCRIPT} or set FLIGHTSIM_BUILD_DIR.")
 
@@ -120,13 +164,16 @@ if sys.platform == "win32":
             k, v = line.split("=", 1)
             os.environ[k] = v
 
-    # Register DLL search paths explicitly
-    for p in os.environ.get("PATH", "").split(";"):
-        if os.path.isdir(p):
-            try:
+    # Python loads the DLLs of extension modules from the folders registered with os.add_dll_directory and from System32, not
+    # from PATH. Register the folders that the run environment of the build puts on PATH (OpenSceneGraph), but not the rest of
+    # PATH: programs there often ship an older Visual C++ runtime (msvcp140.dll), which is searched before the one of Windows
+    # and crashes skybolt with an access violation (exit code 0xC0000005) when it starts its threads.
+    for paths in re.findall(r'set "PATH=([^"]*)"', RUN_ENV_FILE.read_text(encoding="utf-8")):
+        for p in paths.split(";"):
+            if p and "%" not in p and os.path.isdir(p):
                 os.add_dll_directory(p)
-            except OSError:
-                pass
+
+    check_cpp_runtime()
 else:
     # Under WSL2, Mesa renders on the CPU (llvmpipe) unless its driver for the GPU is selected, which is about 25x faster
     if os.path.exists("/dev/dxg"):
